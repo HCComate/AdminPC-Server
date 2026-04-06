@@ -1,0 +1,46 @@
+import eventlet
+import threading
+import socketio
+from flask import Flask
+
+from database import init_db, db_worker
+from auth import auth, init_users_db
+from api_routes import api
+from socket_events import register_events
+
+# Flask 앱 생성 및 블루프린트 등록
+flask_app = Flask(__name__)
+flask_app.register_blueprint(api)     # REST API (검사 데이터)
+flask_app.register_blueprint(auth)    # 인증 / 사용자 관리
+
+# Socket.IO 서버 생성 및 Flask 앱 통합
+sio = socketio.Server(cors_allowed_origins='*')
+app = socketio.WSGIApp(sio, flask_app)
+
+# Socket.IO 이벤트 핸들러 등록
+register_events(sio)
+
+# 서버 실행
+if __name__ == '__main__':
+    init_db()           # 검사 로그 DB (inspection_logs.db)
+    init_users_db()     # 사용자 DB   (users.db)
+
+    # DB 저장 전담 스레드 가동
+    threading.Thread(target=db_worker, daemon=True).start()
+    print("✅ DB 저장 스레드 백그라운드 가동 시작...")
+
+    print("🚀 관리자 PC 서버가 포트 5000에서 대기 중입니다...")
+    print("📡 REST API 엔드포인트:")
+    print("   [인증]")
+    print("   POST /api/auth/login       - 로그인")
+    print("   GET  /api/auth/me          - 내 정보 조회")
+    print("   [사용자 관리 - Master 전용]")
+    print("   GET  /api/users            - 사용자 목록")
+    print("   POST /api/users            - 사용자 등록")
+    print("   DELETE /api/users/<id>     - 사용자 삭제")
+    print("   [검사 데이터]")
+    print("   GET  /api/devices          - 장비 목록 조회")
+    print("   GET  /api/logs             - 검사 이력 조회")
+    print("   GET  /api/logs/after       - 최신 데이터 동기화")
+    print("   GET  /api/dashboard/summary - 대시보드 요약")
+    eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 5000)), app)
