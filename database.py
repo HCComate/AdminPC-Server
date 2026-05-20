@@ -37,6 +37,32 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_logs_device_id ON logs(device_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_logs_machine_status ON logs(machine_status)')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+
+    # 시드 데이터 삽입: devices 테이블이 비어있는 경우 기본 장비 5대 추가
+    cursor.execute('SELECT COUNT(*) FROM devices')
+    if cursor.fetchone()[0] == 0:
+        seed_devices = [
+            ('RASP_PI_01', '비전검사 장비 #1', 'SMT_CHIP_A20'),
+            ('RASP_PI_02', '비전검사 장비 #2', 'SMT_CHIP_A20'),
+            ('RASP_PI_03', '비전검사 장비 #3', 'SMT_CHIP_B15'),
+            ('RASP_PI_04', '비전검사 장비 #4', 'SMT_CHIP_B15'),
+            ('RASP_PI_05', '비전검사 장비 #5', 'SMT_CHIP_C10')
+        ]
+        cursor.executemany('''
+            INSERT INTO devices (device_id, name, model_name)
+            VALUES (?, ?, ?)
+        ''', seed_devices)
+        print("🌱 기본 장비 5대가 DB에 추가되었습니다.")
+
     conn.commit()
     conn.close()
     print("✅ 데이터베이스 초기화 완료. (WAL 모드 활성화)")

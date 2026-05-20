@@ -214,3 +214,77 @@ def resolve_device_error(device_id):
         "resolved_by": username
     })
 
+# 📌 API 8. 등록된 전체 장비 목록 조회 (마스터 데이터)
+# GET /api/devices/registered
+@api.route('/api/devices/registered', methods=['GET'])
+@require_auth
+def get_registered_devices():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT device_id, name, model_name, created_at FROM devices ORDER BY id ASC')
+    devices = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(devices)
+
+# 📌 API 9. 새 장비 등록
+# POST /api/devices/registered
+# 권한: Master만
+@api.route('/api/devices/registered', methods=['POST'])
+@require_permission('device_manage')
+def register_device():
+    data = request.json
+    device_id = data.get('device_id')
+    name = data.get('name')
+    model_name = data.get('model_name')
+
+    if not device_id or not name or not model_name:
+        return jsonify({"error": "device_id, name, model_name이 모두 필요합니다."}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO devices (device_id, name, model_name)
+            VALUES (?, ?, ?)
+        ''', (device_id, name, model_name))
+        conn.commit()
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": f"장비 등록 실패: {str(e)}"}), 400
+
+    conn.close()
+    
+    # 런타임 상태 즉시 추가
+    if device_id not in device_status:
+        device_status[device_id] = {"status": "IDLE"}
+        
+    return jsonify({"message": f"장비 '{device_id}'가 성공적으로 등록되었습니다."}), 201
+
+# 📌 API 10. 장비 삭제
+# DELETE /api/devices/registered/<device_id>
+# 권한: Master만
+@api.route('/api/devices/registered/<device_id>', methods=['DELETE'])
+@require_permission('device_manage')
+def delete_device(device_id):
+    # 가동 중이거나 에러 상태인 장비는 삭제 불가
+    status = device_status.get(device_id, {}).get('status', 'IDLE')
+    if status in ['RUN', 'ERROR']:
+        return jsonify({"error": f"장비 '{device_id}'가 가동 중이거나 오류 상태입니다. 정지 후 삭제해주세요."}), 400
+
+    if device_id in locked_devices:
+        return jsonify({"error": f"장비 '{device_id}'가 잠겨있습니다. 잠금 해제 후 삭제해주세요."}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM devices WHERE device_id = ?', (device_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    if deleted:
+        # 런타임 상태에서도 제거
+        if device_id in device_status:
+            del device_status[device_id]
+        return jsonify({"message": f"장비 '{device_id}'가 삭제되었습니다."})
+    else:
+        return jsonify({"error": f"장비 '{device_id}'를 찾을 수 없습니다."}), 404
