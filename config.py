@@ -49,3 +49,5 @@ ROLE_PERMISSIONS = {
 # ── 공유 상태 ──
 data_queue = queue.Queue()          # DB 저장용 큐 (라즈베리 파이 → DB 버퍼)
 device_status = {}                  # 장비 상태 실시간 추적 딕셔너리
+locked_devices = {}                 # CRITICAL 오류로 잠긴 장비 { device_id: { error_codes, timestamp, ... } }
+online_users = {}                   # 모바일 앱 접속 중인 사용자 { sid: { user_id, username, nickname, role } }

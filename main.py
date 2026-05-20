@@ -13,12 +13,24 @@ flask_app = Flask(__name__)
 flask_app.register_blueprint(api)     # REST API (검사 데이터)
 flask_app.register_blueprint(auth)    # 인증 / 사용자 관리
 
+
+# CORS 허용 (React 프론트엔드에서 API 호출 허용)
+@flask_app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    return response
+
 # Socket.IO 서버 생성 및 Flask 앱 통합
 sio = socketio.Server(cors_allowed_origins='*')
 app = socketio.WSGIApp(sio, flask_app)
 
 # Socket.IO 이벤트 핸들러 등록
 register_events(sio)
+
+# api 블루프린트에서 소켓 이벤트를 보낼 수 있도록 sio 인스턴스 주입
+api._sio = sio
 
 # 서버 실행
 if __name__ == '__main__':
@@ -43,4 +55,7 @@ if __name__ == '__main__':
     print("   GET  /api/logs             - 검사 이력 조회")
     print("   GET  /api/logs/after       - 최신 데이터 동기화")
     print("   GET  /api/dashboard/summary - 대시보드 요약")
+    print("   [장비 잠금/해제 - Master, Technician 전용]")
+    print("   GET  /api/devices/locked   - 잠긴 장비 목록")
+    print("   POST /api/devices/<id>/resolve - 장비 잠금 해제")
     eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 5000)), app)
