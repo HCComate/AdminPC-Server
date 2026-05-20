@@ -10,6 +10,32 @@ def register_events(sio):
     def connect(sid, environ):
         print(f"[{sid}] 클라이언트 연결됨")
 
+    # 🔓 웹 UI에서 '전체 잠금 해제' 버튼을 눌렀을 때 들어오는 이벤트
+    @sio.on('unlock_all_devices')
+    def on_unlock_all(sid):
+        if not locked_devices:
+            print("ℹ️ 잠긴 장비가 없습니다.")
+            return
+
+        unlocked_list = list(locked_devices.keys())
+        for device_id in unlocked_list:
+            del locked_devices[device_id]
+            device_status[device_id] = {"status": "IDLE"}
+
+            # 라즈베리파이에 잠금 해제 명령
+            sio.emit('device_unlock', {
+                "device_id": device_id,
+                "resolved_by": "AdminPC (일괄 해제)"
+            })
+
+            # 프론트엔드 + 모바일에 해제 알림
+            sio.emit('error_resolved', {
+                "device_id": device_id,
+                "resolved_by": "AdminPC (일괄 해제)"
+            })
+
+        print(f"🔓 전체 장비 잠금 해제 완료: {unlocked_list}")
+
     # 🌟 웹 UI에서 '특정 장비 시작 버튼'을 눌렀을 때 들어오는 이벤트
     @sio.on('ui_start_btn')
     def on_ui_start_btn(sid, data):

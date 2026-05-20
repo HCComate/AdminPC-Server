@@ -3,10 +3,11 @@ import threading
 import socketio
 from flask import Flask
 
-from database import init_db, db_worker
+from database import init_db, db_worker, get_db
 from auth import auth, init_users_db
 from api_routes import api
 from socket_events import register_events
+from config import device_status
 
 # Flask 앱 생성 및 블루프린트 등록
 flask_app = Flask(__name__)
@@ -37,6 +38,16 @@ if __name__ == '__main__':
     init_db()           # 검사 로그 DB (inspection_logs.db)
     init_users_db()     # 사용자 DB   (users.db)
 
+    # 🚀 장비 상태(device_status)를 DB에 등록된 장비 목록으로 초기화
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT device_id FROM devices')
+    for row in cursor.fetchall():
+        device_id = row['device_id']
+        device_status[device_id] = {"status": "IDLE"}
+    conn.close()
+    print(f"✅ 총 {len(device_status)}대의 장비를 인메모리 상태에 IDLE로 초기화했습니다.")
+
     # DB 저장 전담 스레드 가동
     threading.Thread(target=db_worker, daemon=True).start()
     print("✅ DB 저장 스레드 백그라운드 가동 시작...")
@@ -55,6 +66,10 @@ if __name__ == '__main__':
     print("   GET  /api/logs             - 검사 이력 조회")
     print("   GET  /api/logs/after       - 최신 데이터 동기화")
     print("   GET  /api/dashboard/summary - 대시보드 요약")
+    print("   [장비 관리 - Master 전용]")
+    print("   GET  /api/devices/registered - 전체 장비 마스터 조회")
+    print("   POST /api/devices/registered - 새 장비 등록")
+    print("   DELETE /api/devices/registered/<id> - 장비 삭제")
     print("   [장비 잠금/해제 - Master, Technician 전용]")
     print("   GET  /api/devices/locked   - 잠긴 장비 목록")
     print("   POST /api/devices/<id>/resolve - 장비 잠금 해제")
