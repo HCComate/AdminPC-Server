@@ -131,6 +131,43 @@ def register_events(sio):
         # 프론트엔드로 완료 이벤트 포워딩
         sio.emit('batch_complete_notify', data)
 
+    # 🔄 연속 가동 장비: 웹 UI에서 시작 버튼을 눌렀을 때
+    @sio.on('ui_start_continuous')
+    def on_ui_start_continuous(sid, data):
+        target_device = data.get('device_id')
+
+        # ⛔ 잠긴 장비는 시작 차단
+        if target_device in locked_devices:
+            sio.emit('start_blocked', {
+                "device_id": target_device,
+                "reason": "치명적 오류가 해결되지 않았습니다."
+            }, to=sid)
+            return
+
+        print(f"\n🔄 웹 UI로부터 [{target_device}] 연속 가동 요청을 받았습니다.")
+        device_status[target_device] = {"status": "IDLE"}
+
+        # 라즈베리 파이에게 연속 가동 시작 명령
+        sio.emit('start_continuous', data)
+
+    # 🔄 연속 가동 장비: 웹 UI에서 종료 버튼을 눌렀을 때
+    @sio.on('ui_stop_continuous')
+    def on_ui_stop_continuous(sid, data):
+        device_id = data.get('device_id')
+        print(f"⏹️ 웹 UI로부터 [{device_id}] 연속 가동 종료 요청을 받았습니다.")
+        # 라즈베리 파이에게 종료 명령
+        sio.emit('stop_continuous', data)
+
+    # 🔄 연속 가동 장비: 라즈베리 파이가 종료 완료를 알렸을 때
+    @sio.on('continuous_stopped')
+    def on_continuous_stopped(sid, data):
+        device_id = data.get('device_id')
+        total_count = data.get('total_count', 0)
+        device_status[device_id] = {"status": "STOP"}
+        print(f"\n⏹️ [{device_id}] 연속 가동 종료 완료 (총 {total_count}건)\n")
+        # 프론트엔드로 종료 완료 알림
+        sio.emit('continuous_stopped_notify', data)
+
     # 📱 모바일 앱 사용자 인증 (소켓 연결 후 토큰을 보내 근무 상태 등록)
     @sio.on('worker_auth')
     def on_worker_auth(sid, data):

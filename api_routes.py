@@ -42,7 +42,7 @@ def get_error_codes():
 
 # 📌 API 1. 장비 목록 조회
 # GET /api/devices
-# 권한: dashboard_view (Operator, Technician, Master)
+# 권한: dashboard_view (OPERATOR, TECHNICIAN, MASTER)
 @api.route('/api/devices', methods=['GET'])
 @require_auth
 def get_devices():
@@ -57,7 +57,7 @@ def get_devices():
 
 # 📌 API 2. 검사 이력 조회
 # GET /api/logs?device_id=RASP_PI_01&limit=100
-# 권한: inspection_result (Operator, Technician, Master)
+# 권한: inspection_result (OPERATOR, TECHNICIAN, MASTER)
 @api.route('/api/logs', methods=['GET'])
 @require_permission('inspection_result')
 def get_logs():
@@ -93,7 +93,7 @@ def get_logs():
 
 # 📌 API 3. 최신 데이터 동기화 (폴링용)
 # GET /api/logs/after?last_id=500
-# 권한: inspection_result (Operator, Technician, Master)
+# 권한: inspection_result (OPERATOR, TECHNICIAN, MASTER)
 @api.route('/api/logs/after', methods=['GET'])
 @require_permission('inspection_result')
 def get_logs_after():
@@ -120,7 +120,7 @@ def get_logs_after():
 
 # 📌 API 4. 대시보드 요약
 # GET /api/dashboard/summary
-# 권한: dashboard_view (Operator, Technician, Master)
+# 권한: dashboard_view (OPERATOR, TECHNICIAN, MASTER)
 @api.route('/api/dashboard/summary', methods=['GET'])
 @require_auth
 def get_dashboard_summary():
@@ -166,28 +166,28 @@ def get_dashboard_summary():
 
 # 📌 API 6. 잠긴 장비 목록 조회
 # GET /api/devices/locked
-# 권한: Master, Technician만
+# 권한: MASTER, TECHNICIAN만
 @api.route('/api/devices/locked', methods=['GET'])
 @require_auth
 def get_locked_devices():
     user_role = request.user.get('role')
-    if user_role not in ('Master', 'Technician'):
-        return jsonify({"error": "권한이 없습니다. (필요: Master 또는 Technician)"}), 403
+    if user_role not in ('MASTER', 'TECHNICIAN'):
+        return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     return jsonify(list(locked_devices.values()))
 
 
 # 📌 API 7. 장비 에러 해제 (모바일 앱에서 '확인' 버튼)
 # POST /api/devices/<device_id>/resolve
-# 권한: Master, Technician만
+# 권한: MASTER, TECHNICIAN만
 @api.route('/api/devices/<device_id>/resolve', methods=['POST'])
 @require_auth
 def resolve_device_error(device_id):
     user_role = request.user.get('role')
     username = request.user.get('username')
 
-    if user_role not in ('Master', 'Technician'):
-        return jsonify({"error": "권한이 없습니다. (필요: Master 또는 Technician)"}), 403
+    if user_role not in ('MASTER', 'TECHNICIAN'):
+        return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     if device_id not in locked_devices:
         return jsonify({"error": f"'{device_id}'는 현재 잠긴 상태가 아닙니다."}), 404
@@ -228,7 +228,7 @@ def get_registered_devices():
 
 # 📌 API 9. 새 장비 등록
 # POST /api/devices/registered
-# 권한: Master만
+# 권한: MASTER만
 @api.route('/api/devices/registered', methods=['POST'])
 @require_permission('device_manage')
 def register_device():
@@ -262,7 +262,7 @@ def register_device():
 
 # 📌 API 10. 장비 삭제
 # DELETE /api/devices/registered/<device_id>
-# 권한: Master만
+# 권한: MASTER만
 @api.route('/api/devices/registered/<device_id>', methods=['DELETE'])
 @require_permission('device_manage')
 def delete_device(device_id):
@@ -288,3 +288,60 @@ def delete_device(device_id):
         return jsonify({"message": f"장비 '{device_id}'가 삭제되었습니다."})
     else:
         return jsonify({"error": f"장비 '{device_id}'를 찾을 수 없습니다."}), 404
+
+
+# 📌 API 11. 로그 내보내기 및 비우기
+# POST /api/logs/export-and-clear
+# 권한: MASTER, TECHNICIAN만
+@api.route('/api/logs/export-and-clear', methods=['POST'])
+@require_auth
+def export_and_clear_logs():
+    import csv
+    import os
+    from datetime import datetime
+
+    user_role = request.user.get('role')
+    if user_role not in ('MASTER', 'TECHNICIAN'):
+        return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 1) 현재 로그 전체 조회
+    cursor.execute('SELECT * FROM logs ORDER BY id ASC')
+    rows = cursor.fetchall()
+
+    if len(rows) == 0:
+        conn.close()
+        return jsonify({"error": "내보낼 로그가 없습니다. (DB가 비어 있음)"}), 400
+
+    # 2) CSV 저장 폴더 생성
+    export_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'exported_logs')
+    os.makedirs(export_dir, exist_ok=True)
+
+    # 3) 파일명: 내보낸 시각 기반
+    now = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"logs_{now}.csv"
+    filepath = os.path.join(export_dir, filename)
+
+    # 4) CSV 파일 작성
+    columns = [desc[0] for desc in cursor.description]
+    with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        writer.writerow(columns)   # 헤더
+        writer.writerows(rows)     # 데이터
+
+    row_count = len(rows)
+
+    # 5) 로그 테이블 비우기
+    cursor.execute('DELETE FROM logs')
+    conn.commit()
+    conn.close()
+
+    print(f"📁 로그 {row_count}건 내보내기 완료 → {filepath}")
+
+    return jsonify({
+        "message": f"로그 {row_count}건을 CSV로 내보내고 DB를 비웠습니다.",
+        "file": filename,
+        "count": row_count
+    })
