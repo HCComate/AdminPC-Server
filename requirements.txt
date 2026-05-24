@@ -3,3 +3,4 @@ flask                   # REST API 웹 프레임워크 (werkzeug 포함)
 python-socketio         # Socket.IO 서버
 eventlet                # 비동기 WSGI 서버
 PyJWT                   # JWT 토큰 인증
+python-dotenv           # 환경 변수 로드

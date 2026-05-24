@@ -1,16 +1,20 @@
 import queue
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── 데이터베이스 ──
 DB_NAME = 'inspection_logs.db'       # 검사 데이터 전용
 USERS_DB_NAME = 'users.db'           # 사용자/인증 전용
 
 # ── JWT 인증 ──
-JWT_SECRET = 'capstone-vision-mate-2026'   # 운영 시 반드시 변경
+JWT_SECRET = os.getenv('JWT_SECRET', 'capstone-vision-mate-2026')   # 운영 시 반드시 환경 변수로 변경
 JWT_EXPIRY_HOURS = 24                      # 토큰 유효 시간
 
 # ── 역할별 권한 매핑 (제안서 기반) ──
 ROLE_PERMISSIONS = {
-    "Operator": [
+    "OPERATOR": [
         "dashboard_view",       # 대시보드 조회
         "device_detail",        # 장비 상세 조회
         "inspection_result",    # 검사 결과 조회
@@ -18,7 +22,7 @@ ROLE_PERMISSIONS = {
         "alert_assign",         # 알림 수신/배정
         "sensitivity_setting",  # 감도 설정 (Medium/Low)
     ],
-    "Technician": [
+    "TECHNICIAN": [
         "dashboard_view",
         "device_detail",
         "inspection_result",
@@ -29,7 +33,7 @@ ROLE_PERMISSIONS = {
         "log_export",           # 로그 내보내기
         "sensitivity_setting",
     ],
-    "Master": [
+    "MASTER": [
         "dashboard_view",
         "device_detail",
         "inspection_result",
