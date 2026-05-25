@@ -1,6 +1,6 @@
 import json
 from flask import Blueprint, request, jsonify
-from config import device_status, locked_devices
+from config import device_status, locked_devices, escalation_sessions
 from database import get_db
 from auth import require_auth, require_permission
 from error_loader import load_error_codes
@@ -171,7 +171,7 @@ def get_dashboard_summary():
 @require_auth
 def get_locked_devices():
     user_role = request.user.get('role')
-    if user_role not in ('Master', 'Technician'):
+    if user_role not in ('MASTER', 'TECHNICIAN'):
         return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     return jsonify(list(locked_devices.values()))
@@ -179,22 +179,31 @@ def get_locked_devices():
 
 # 📌 API 7. 장비 에러 해제 (모바일 앱에서 '확인' 버튼)
 # POST /api/devices/<device_id>/resolve
-# 권한: MASTER, TECHNICIAN만
+# 권한: 에스컬레이션을 수락한 담당자 또는 MASTER
 @api.route('/api/devices/<device_id>/resolve', methods=['POST'])
 @require_auth
 def resolve_device_error(device_id):
+    user_id = request.user.get('user_id')
     user_role = request.user.get('role')
     username = request.user.get('username')
-
-    if user_role not in ('Master', 'Technician'):
-        return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     if device_id not in locked_devices:
         return jsonify({"error": f"'{device_id}'는 현재 잠긴 상태가 아닙니다."}), 404
 
+    # 에스컬레이션 권한 체크
+    session = escalation_sessions.get(device_id)
+    is_assigned = (session and session.get("assigned_to") == user_id)
+    is_master = (user_role == 'MASTER')
+
+    if not is_assigned and not is_master:
+        return jsonify({"error": "오류를 해제할 권한이 없습니다. (담당자 또는 MASTER만 가능)"}), 403
+
     # 잠금 해제
     del locked_devices[device_id]
     device_status[device_id] = {"status": "IDLE"}
+    
+    if device_id in escalation_sessions:
+        del escalation_sessions[device_id]
 
     print(f"🔓 [{device_id}] 장비 잠금 해제됨 (해제자: {username})")
 
@@ -301,7 +310,7 @@ def export_and_clear_logs():
     from datetime import datetime
 
     user_role = request.user.get('role')
-    if user_role not in ('Master', 'Technician'):
+    if user_role not in ('MASTER', 'TECHNICIAN'):
         return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     conn = get_db()

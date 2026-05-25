@@ -14,7 +14,7 @@ JWT_EXPIRY_HOURS = int(os.getenv('JWT_EXPIRY_HOURS', '24'))
 
 # ── 역할별 권한 매핑 ──────────────────────────
 ROLE_PERMISSIONS = {
-    "Operator": [
+    "OPERATOR": [
         "dashboard_view",
         "device_detail",
         "inspection_result",
@@ -22,7 +22,7 @@ ROLE_PERMISSIONS = {
         "alert_assign",
         "sensitivity_setting",
     ],
-    "Technician": [
+    "TECHNICIAN": [
         "dashboard_view",
         "device_detail",
         "inspection_result",
@@ -33,7 +33,7 @@ ROLE_PERMISSIONS = {
         "log_export",
         "sensitivity_setting",
     ],
-    "Master": [
+    "MASTER": [
         "dashboard_view",
         "device_detail",
         "inspection_result",
@@ -55,3 +55,5 @@ data_queue     = queue.Queue()
 device_status  = {}
 locked_devices = {}
 online_users   = {}
+escalation_sessions = {}
+
