@@ -1,6 +1,78 @@
 import json
-from config import device_status, data_queue, locked_devices, online_users
+import random
+import eventlet
+from config import device_status, data_queue, locked_devices, online_users, escalation_sessions
 from auth import decode_token
+
+def build_escalation_queue():
+    operators = []
+    technicians = []
+    masters = []
+    for sid, info in online_users.items():
+        if info['role'] == 'OPERATOR':
+            operators.append(sid)
+        elif info['role'] == 'TECHNICIAN':
+            technicians.append(sid)
+        elif info['role'] == 'MASTER':
+            masters.append(sid)
+    
+    random.shuffle(operators)
+    random.shuffle(technicians)
+    random.shuffle(masters)
+    
+    return operators + technicians + masters
+
+def start_escalation(sio, device_id, error_data):
+    queue = build_escalation_queue()
+    if not queue:
+        # 온라인 사용자 없음 -> 0순위 브로드캐스트
+        sio.emit('critical_alert', error_data)
+        print(f"🚨 [{device_id}] CRITICAL 오류! (접속자 없음, 전체 알림 발송)")
+        return
+
+    escalation_sessions[device_id] = {
+        "queue": queue,
+        "current_target": None,
+        "assigned_to": None,
+        "timer_task": None,
+        "error_data": error_data
+    }
+    print(f"🔄 [{device_id}] 에스컬레이션 시작: {len(queue)}명 대기 중")
+    notify_next_escalation(sio, device_id)
+
+def notify_next_escalation(sio, device_id):
+    session = escalation_sessions.get(device_id)
+    if not session:
+        return
+
+    # 기존 타이머 취소
+    if session.get("timer_task"):
+        session["timer_task"].cancel()
+        session["timer_task"] = None
+
+    if not session["queue"]:
+        # 모든 큐 소진 시 다시 전체 알림(fallback)
+        sio.emit('critical_alert', session["error_data"])
+        print(f"🚨 [{device_id}] 에스컬레이션 큐 소진! 전체 브로드캐스트 발송.")
+        return
+
+    next_sid = session["queue"].pop(0)
+    session["current_target"] = next_sid
+    
+    # 다음 사람에게만 전송
+    sio.emit('escalation_alert', session["error_data"], to=next_sid)
+    user_info = online_users.get(next_sid, {})
+    print(f"📩 [{device_id}] 에스컬레이션 알림 발송 -> {user_info.get('username', next_sid)}")
+
+    # 20초 타임아웃
+    session["timer_task"] = eventlet.spawn_after(20.0, escalation_timeout, sio, device_id, next_sid)
+
+def escalation_timeout(sio, device_id, sid):
+    session = escalation_sessions.get(device_id)
+    if session and session.get("current_target") == sid:
+        user_info = online_users.get(sid, {})
+        print(f"⏰ [{device_id}] {user_info.get('username', sid)} 응답 시간(20초) 초과. 다음 사람으로 넘어갑니다.")
+        notify_next_escalation(sio, device_id)
 
 
 def register_events(sio):
@@ -20,6 +92,8 @@ def register_events(sio):
         unlocked_list = list(locked_devices.keys())
         for device_id in unlocked_list:
             del locked_devices[device_id]
+            if device_id in escalation_sessions:
+                del escalation_sessions[device_id]
             device_status[device_id] = {"status": "IDLE"}
 
             # 라즈베리파이에 잠금 해제 명령
@@ -88,20 +162,16 @@ def register_events(sio):
         )
         data_queue.put(row_data)
 
-        # 2) 모바일 앱이 어떤 이미지를 쓸지 바로 알 수 있도록 'image_type' 삽입
-        image_type = "normal"
+        # 2) ERROR 판별용 변수 추출
         if machine_status == "ERROR":
             status_info = body.get('status_info', [])
             codes = [s.get('code', '?') for s in status_info]
             severities = [s.get('severity', '') for s in status_info]
             has_critical = any(s == 'CRITICAL' for s in severities)
-            image_type = "critical" if has_critical else "error"
         else:
             has_critical = False
             codes = []
 
-        data['image_type'] = image_type
-        
         # 모바일 앱 서버로 실시간 데이터 포워딩 (중계 역할)
         sio.emit('mobile_data_feed', data)
 
@@ -121,10 +191,8 @@ def register_events(sio):
                 # 라즈베리파이에 즉시 정지 명령
                 sio.emit('device_lock', {"device_id": device_id})
 
-                # 프론트엔드 + 모바일앱에 긴급 알림 브로드캐스트
-                sio.emit('critical_alert', locked_devices[device_id])
-
-                print(f"🚨 [{device_id}] CRITICAL 오류! 장비 잠금 및 긴급 알림 발송!")
+                # 에스컬레이션 알림 시스템 시작
+                start_escalation(sio, device_id, locked_devices[device_id])
             else:
                 # CRITICAL이 아닌 에러 → 가동 유지 (RUN 상태 덮어쓰기)
                 device_status[device_id] = {"status": "RUN"}
@@ -195,11 +263,15 @@ def register_events(sio):
             }
             online_users[sid] = user_info
             
-            # 모바일 앱에서 미리 캐싱할 수 있도록 이미지 URL 목록 전달
+            # 모바일 앱에서 미리 캐싱할 수 있도록 비전 검사 이미지 URL 목록 전달
             images = {
-                "normal": "/static/images/normal.png",
-                "error": "/static/images/error.png",
-                "critical": "/static/images/critical.png"
+                "ok": "/static/images/vision_ok.png",
+                "crack": "/static/images/vision_crack.png",
+                "dent": "/static/images/vision_dent.png",
+                "misaligned": "/static/images/vision_misaligned.png",
+                "missing": "/static/images/vision_missing.png",
+                "open": "/static/images/vision_open.png",
+                "scratch": "/static/images/vision_scratch.png"
             }
             sio.emit('worker_auth_result', {"success": True, "user": user_info, "images": images}, to=sid)
 
@@ -212,6 +284,46 @@ def register_events(sio):
             print(f"🟢 [{payload['username']}] 근무 시작 (모바일 앱 접속)")
         except Exception as e:
             sio.emit('worker_auth_result', {"success": False, "error": str(e)}, to=sid)
+
+    # 🚨 에스컬레이션 관련 이벤트
+    @sio.on('escalation_accept')
+    def on_escalation_accept(sid, data):
+        device_id = data.get('device_id')
+        session = escalation_sessions.get(device_id)
+        if session and session.get("current_target") == sid:
+            if session.get("timer_task"):
+                session["timer_task"].cancel()
+                session["timer_task"] = None
+            
+            user_info = online_users.get(sid, {})
+            session["assigned_to"] = user_info.get("user_id")
+            session["current_target"] = None
+            
+            sio.emit('escalation_assigned', {
+                "device_id": device_id,
+                "assigned_to": user_info.get("user_id"),
+                "username": user_info.get("username")
+            })
+            print(f"✅ [{device_id}] {user_info.get('username')}님이 오류 수정을 수락했습니다.")
+
+    @sio.on('escalation_reject')
+    def on_escalation_reject(sid, data):
+        device_id = data.get('device_id')
+        session = escalation_sessions.get(device_id)
+        if session and session.get("current_target") == sid:
+            user_info = online_users.get(sid, {})
+            print(f"❌ [{device_id}] {user_info.get('username')}님이 알림을 거절했습니다.")
+            notify_next_escalation(sio, device_id)
+
+    @sio.on('escalation_giveup')
+    def on_escalation_giveup(sid, data):
+        device_id = data.get('device_id')
+        session = escalation_sessions.get(device_id)
+        user_info = online_users.get(sid, {})
+        if session and session.get("assigned_to") == user_info.get("user_id"):
+            print(f"🏳️ [{device_id}] {user_info.get('username')}님이 수락 후 오류 수정을 포기했습니다. 다음 작업자 호출.")
+            session["assigned_to"] = None
+            notify_next_escalation(sio, device_id)
 
     @sio.event
     def disconnect(sid):
