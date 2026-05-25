@@ -88,15 +88,25 @@ def register_events(sio):
         )
         data_queue.put(row_data)
 
-        # 2) 모바일 앱 서버로 실시간 데이터 포워딩 (중계 역할)
-        sio.emit('mobile_data_feed', data)
-
-        # 3) ERROR 상태 처리: CRITICAL일 때만 장비 잠금 + 알림
+        # 2) 모바일 앱이 어떤 이미지를 쓸지 바로 알 수 있도록 'image_type' 삽입
+        image_type = "normal"
         if machine_status == "ERROR":
             status_info = body.get('status_info', [])
             codes = [s.get('code', '?') for s in status_info]
             severities = [s.get('severity', '') for s in status_info]
             has_critical = any(s == 'CRITICAL' for s in severities)
+            image_type = "critical" if has_critical else "error"
+        else:
+            has_critical = False
+            codes = []
+
+        data['image_type'] = image_type
+        
+        # 모바일 앱 서버로 실시간 데이터 포워딩 (중계 역할)
+        sio.emit('mobile_data_feed', data)
+
+        # 3) ERROR 상태 처리: CRITICAL일 때만 장비 잠금 + 알림
+        if machine_status == "ERROR":
 
             if has_critical:
                 # ── CRITICAL: 장비 잠금 + 긴급 알림 ──
@@ -184,7 +194,14 @@ def register_events(sio):
                 'role': payload['role'],
             }
             online_users[sid] = user_info
-            sio.emit('worker_auth_result', {"success": True, "user": user_info}, to=sid)
+            
+            # 모바일 앱에서 미리 캐싱할 수 있도록 이미지 URL 목록 전달
+            images = {
+                "normal": "/static/images/normal.png",
+                "error": "/static/images/error.png",
+                "critical": "/static/images/critical.png"
+            }
+            sio.emit('worker_auth_result', {"success": True, "user": user_info, "images": images}, to=sid)
 
             # 전체 클라이언트에게 근무자 상태 변경 알림
             sio.emit('worker_status_changed', {

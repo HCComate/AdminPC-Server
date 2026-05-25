@@ -171,7 +171,7 @@ def get_dashboard_summary():
 @require_auth
 def get_locked_devices():
     user_role = request.user.get('role')
-    if user_role not in ('MASTER', 'TECHNICIAN'):
+    if user_role not in ('Master', 'Technician'):
         return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     return jsonify(list(locked_devices.values()))
@@ -186,7 +186,7 @@ def resolve_device_error(device_id):
     user_role = request.user.get('role')
     username = request.user.get('username')
 
-    if user_role not in ('MASTER', 'TECHNICIAN'):
+    if user_role not in ('Master', 'Technician'):
         return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     if device_id not in locked_devices:
@@ -301,7 +301,7 @@ def export_and_clear_logs():
     from datetime import datetime
 
     user_role = request.user.get('role')
-    if user_role not in ('MASTER', 'TECHNICIAN'):
+    if user_role not in ('Master', 'Technician'):
         return jsonify({"error": "권한이 없습니다. (필요: MASTER 또는 TECHNICIAN)"}), 403
 
     conn = get_db()
