@@ -21,7 +21,7 @@ def init_users_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'OPERATOR',
+            role TEXT NOT NULL DEFAULT 'Operator',
             nickname TEXT DEFAULT '',
             emp_id TEXT UNIQUE,
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
@@ -76,9 +76,9 @@ def init_users_db():
 
     # 기본 계정이 없으면 생성 (MASTER / TECHNICIAN / OPERATOR 각 1개)
     seed_accounts = [
-        ('admin',      'admin1234',    'MASTER',     '관리자'),
-        ('tech1',      'tech1234',     'TECHNICIAN', '엔지니어1'),
-        ('operator1',  'oper1234',     'OPERATOR',   '작업자1'),
+        ('admin',      'admin1234',    'Master',     '관리자'),
+        ('tech1',      'tech1234',     'Technician', '엔지니어1'),
+        ('operator1',  'oper1234',     'Operator',   '작업자1'),
     ]
 
     for username, password, role, nickname in seed_accounts:
@@ -243,7 +243,7 @@ def get_me():
 
 # GET /api/users
 @auth.route('/api/users', methods=['GET'])
-@require_role('MASTER')
+@require_role('Master')
 def list_users():
     """사용자 목록 조회"""
     conn = get_users_db()
@@ -264,13 +264,13 @@ def list_users():
 
 # POST /api/users
 @auth.route('/api/users', methods=['POST'])
-@require_role('MASTER')
+@require_role('Master')
 def create_user():
     """사용자 등록"""
     body = request.get_json()
     username = body.get('username')
     password = body.get('password')
-    role = body.get('role', 'OPERATOR')
+    role = body.get('role', 'Operator')
     nickname = body.get('nickname', '')
     emp_id = body.get('emp_id')
 
@@ -302,7 +302,7 @@ def create_user():
 
 # DELETE /api/users/<id>
 @auth.route('/api/users/<int:user_id>', methods=['DELETE'])
-@require_role('MASTER')
+@require_role('Master')
 def delete_user(user_id):
     """사용자 삭제"""
     conn = get_users_db()
@@ -316,8 +316,8 @@ def delete_user(user_id):
         return jsonify({"error": "존재하지 않는 사용자입니다."}), 404
 
     # MASTER가 자기 자신을 삭제하는 것 방지
-    if user['role'] == 'MASTER':
-        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'MASTER'")
+    if user['role'] == 'Master':
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'Master'")
         master_count = cursor.fetchone()[0]
         if master_count <= 1:
             conn.close()
@@ -331,7 +331,7 @@ def delete_user(user_id):
 
 # PUT /api/users/<id>
 @auth.route('/api/users/<int:user_id>', methods=['PUT'])
-@require_role('MASTER')
+@require_role('Master')
 def update_user(user_id):
     """사용자 정보 변경 (직급, 닉네임)"""
     body = request.get_json()
@@ -356,8 +356,8 @@ def update_user(user_id):
             return jsonify({"error": f"유효하지 않은 역할입니다. (가능: {', '.join(ROLE_PERMISSIONS.keys())})"}), 400
 
         # 유일한 MASTER의 권한을 강등시키는 것 방지
-        if user['role'] == 'MASTER' and new_role != 'MASTER':
-            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'MASTER'")
+        if user['role'] == 'Master' and new_role != 'Master':
+            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'Master'")
             master_count = cursor.fetchone()[0]
             if master_count <= 1:
                 conn.close()
@@ -450,7 +450,7 @@ def get_schedules():
 
 # POST /api/schedules
 @auth.route('/api/schedules', methods=['POST'])
-@require_role('MASTER', 'TECHNICIAN')
+@require_role('Master', 'Technician')
 def set_schedules():
     body = request.get_json()
     date_str = body.get('date')
@@ -511,7 +511,7 @@ def get_events():
 
 # POST /api/events
 @auth.route('/api/events', methods=['POST'])
-@require_role('MASTER', 'TECHNICIAN')
+@require_role('Master', 'Technician')
 def add_event():
     """특정 날짜에 주요 일정 등록"""
     body = request.get_json()
@@ -538,7 +538,7 @@ def add_event():
 
 # DELETE /api/events/<id>
 @auth.route('/api/events/<int:event_id>', methods=['DELETE'])
-@require_role('MASTER', 'TECHNICIAN')
+@require_role('Master', 'Technician')
 def delete_event(event_id):
     """주요 일정 삭제"""
     conn = get_users_db()
@@ -573,7 +573,7 @@ def get_notices():
 
 # POST /api/notices
 @auth.route('/api/notices', methods=['POST'])
-@require_role('MASTER', 'TECHNICIAN')
+@require_role('Master', 'Technician')
 def add_notice():
     """공지사항 등록"""
     body = request.get_json()
@@ -614,7 +614,7 @@ def add_notice():
 
 # DELETE /api/notices/<id>
 @auth.route('/api/notices/<int:notice_id>', methods=['DELETE'])
-@require_role('MASTER', 'TECHNICIAN')
+@require_role('Master', 'Technician')
 def delete_notice(notice_id):
     """공지사항 삭제"""
     conn = get_users_db()
