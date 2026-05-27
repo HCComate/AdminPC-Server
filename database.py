@@ -44,6 +44,7 @@ def init_db():
             name TEXT NOT NULL,
             model_name TEXT NOT NULL,
             manager_username TEXT,
+            idle_timeout INTEGER DEFAULT 10,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         )
     ''')
@@ -52,6 +53,12 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE devices ADD COLUMN manager_username TEXT")
         print("📋 기존 devices 테이블에 manager_username 컬럼 추가 완료.")
+    except sqlite3.OperationalError:
+        pass  # 컬럼이 이미 존재하면 무시
+
+    try:
+        cursor.execute("ALTER TABLE devices ADD COLUMN idle_timeout INTEGER DEFAULT 10")
+        print("📋 기존 devices 테이블에 idle_timeout 컬럼 추가 완료.")
     except sqlite3.OperationalError:
         pass  # 컬럼이 이미 존재하면 무시
 

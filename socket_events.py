@@ -4,6 +4,42 @@ import eventlet
 from config import device_status, data_queue, locked_devices, online_users, escalation_sessions
 from auth import decode_token
 
+standby_versions = {}
+
+def get_idle_timeout(device_id):
+    try:
+        from database import get_db
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT idle_timeout FROM devices WHERE device_id = ?", (device_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row['idle_timeout'] is not None:
+            return row['idle_timeout']
+    except Exception as e:
+        print("Timeout DB fetch error:", e)
+    return 10
+
+def set_standby_and_start_timer(sio, device_id):
+    device_status[device_id] = {"status": "STANDBY"}
+    version = standby_versions.get(device_id, 0) + 1
+    standby_versions[device_id] = version
+    
+    timeout_seconds = get_idle_timeout(device_id)
+    
+    def timer_task(expected_version):
+        eventlet.sleep(timeout_seconds)
+        if device_status.get(device_id, {}).get("status") == "STANDBY" and standby_versions.get(device_id) == expected_version:
+            device_status[device_id] = {"status": "IDLE"}
+            print(f"⏱️ [{device_id}] {timeout_seconds}초 유휴 시간 초과 -> IDLE 전환")
+            sio.emit('device_status_changed', {
+                "device_id": device_id,
+                "status": "IDLE",
+                "message": f"장비가 설정된 시간({timeout_seconds}초) 동안 아무 작업도 수행하지 않아 대기(IDLE) 모드로 전환되었습니다."
+            })
+            
+    eventlet.spawn(timer_task, version)
+
 def build_escalation_queue(device_id):
     # 1. 담당자 조회
     from database import get_db
@@ -249,12 +285,12 @@ def register_events(sio):
     def on_ui_power_on(sid, data):
         device_id = data.get('device_id')
         if device_id and device_id not in locked_devices:
-            device_status[device_id] = {"status": "IDLE"}
-            print(f"🔌 [{device_id}] 전원 ON (IDLE 전환)")
+            print(f"🔌 [{device_id}] 전원 ON (STANDBY 전환)")
+            set_standby_and_start_timer(sio, device_id)
             sio.emit('device_status_changed', {
                 "device_id": device_id,
-                "status": "IDLE",
-                "message": "장비 전원이 켜졌습니다."
+                "status": "STANDBY",
+                "message": "장비 전원이 켜졌습니다. 가동 준비 중입니다."
             })
 
     # 🔌 웹 UI에서 전원 OFF 요청
@@ -302,8 +338,8 @@ def register_events(sio):
     def on_continuous_stopped(sid, data):
         device_id = data.get('device_id')
         total_count = data.get('total_count', 0)
-        device_status[device_id] = {"status": "STOP"}
         print(f"\n⏹️ [{device_id}] 연속 가동 종료 완료 (총 {total_count}건)\n")
+        set_standby_and_start_timer(sio, device_id)
         # 프론트엔드로 종료 완료 알림
         sio.emit('continuous_stopped_notify', data)
 
