@@ -701,7 +701,7 @@ def resolve_device_error(device_id):
 def get_registered_devices():
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT device_id, name, model_name, manager_username, created_at FROM devices ORDER BY id ASC')
+    cursor.execute('SELECT device_id, name, model_name, manager_username, idle_timeout, created_at FROM devices ORDER BY id ASC')
     devices = [dict(row) for row in cursor.fetchall()]
     conn.close()
 
@@ -739,6 +739,8 @@ def register_device():
     model_name = data.get('model_name')
     manager_username = data.get('manager_username')
 
+    idle_timeout = data.get('idle_timeout', 10)
+
     if not device_id or not name or not model_name:
         return jsonify({"error": "device_id, name, model_name이 모두 필요합니다."}), 400
 
@@ -754,9 +756,9 @@ def register_device():
 
     try:
         cursor.execute('''
-            INSERT INTO devices (device_id, name, model_name, manager_username)
-            VALUES (?, ?, ?, ?)
-        ''', (device_id, name, model_name, manager_username))
+            INSERT INTO devices (device_id, name, model_name, manager_username, idle_timeout)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (device_id, name, model_name, manager_username, idle_timeout))
         conn.commit()
     except Exception as e:
         conn.close()
@@ -778,6 +780,7 @@ def register_device():
 def update_device_manager(device_id):
     data = request.json
     manager_username = data.get('manager_username')
+    idle_timeout = data.get('idle_timeout')
 
     conn = get_db()
     cursor = conn.cursor()
@@ -789,7 +792,10 @@ def update_device_manager(device_id):
             conn.close()
             return jsonify({"error": f"해당 사용자({manager_username})는 이미 다른 장비의 담당자로 지정되어 있습니다."}), 400
 
-    cursor.execute('UPDATE devices SET manager_username = ? WHERE device_id = ?', (manager_username, device_id))
+    if idle_timeout is not None:
+        cursor.execute('UPDATE devices SET manager_username = ?, idle_timeout = ? WHERE device_id = ?', (manager_username, idle_timeout, device_id))
+    else:
+        cursor.execute('UPDATE devices SET manager_username = ? WHERE device_id = ?', (manager_username, device_id))
     
     if cursor.rowcount == 0:
         conn.close()
