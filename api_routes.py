@@ -658,7 +658,18 @@ def resolve_device_error(device_id):
 
     # 잠금 해제
     del locked_devices[device_id]
-    device_status[device_id] = {"status": "IDLE"}
+    
+    # STANDBY 전환 및 타이머 시작
+    from socket_events import set_standby_and_start_timer
+    if hasattr(api, '_sio'):
+        set_standby_and_start_timer(api._sio, device_id)
+        api._sio.emit('device_status_changed', {
+            "device_id": device_id,
+            "status": "STANDBY",
+            "message": "장비 잠금이 해제되었습니다. 가동 준비 중입니다."
+        })
+    else:
+        device_status[device_id] = {"status": "STANDBY"}
     
     if device_id in escalation_sessions:
         del escalation_sessions[device_id]
