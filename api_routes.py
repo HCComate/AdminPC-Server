@@ -164,6 +164,464 @@ def get_dashboard_summary():
     })
 
 
+# ═══════════════════════════════════════════════════════════════
+# 📊 통계 API 영역 (DB 테이블 추가 없이, logs 단일 테이블의 SQL 집계로 구현)
+# 모바일 앱 프론트엔드(daily.tsx, weekly.tsx, monthly.tsx, yearly.tsx)의
+# TypeScript 인터페이스에 100% 일치하는 JSON을 반환합니다.
+# ═══════════════════════════════════════════════════════════════
+
+# 📊 통계 API 1. 일간 통계
+# GET /api/stats/daily?date=YYYY-MM-DD
+@api.route('/api/stats/daily', methods=['GET'])
+@require_auth
+def get_daily_stats():
+    from datetime import datetime
+    target_date = request.args.get('date')
+    if not target_date:
+        target_date = datetime.now().strftime('%Y-%m-%d')
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 1) 시간대별 상태 변화 추이 (status_trend_by_hour)
+    cursor.execute('''
+        SELECT 
+            substr(timestamp, 12, 2) as hour,
+            SUM(CASE WHEN machine_status = 'RUN' THEN 1 ELSE 0 END) as run_cnt,
+            SUM(CASE WHEN machine_status = 'ERROR' THEN 1 ELSE 0 END) as err_cnt,
+            SUM(CASE WHEN machine_status NOT IN ('RUN', 'ERROR') THEN 1 ELSE 0 END) as idle_cnt
+        FROM logs
+        WHERE substr(timestamp, 1, 10) = ?
+        GROUP BY substr(timestamp, 12, 2)
+        ORDER BY hour ASC
+    ''', (target_date,))
+    status_trend = [{"hour": row[0] + "시", "RUN": row[1], "ERROR": row[2], "IDLE": row[3]} for row in cursor.fetchall()]
+
+    # 2) 평균 센서 상태 (average_sensor)
+    cursor.execute('''
+        SELECT sensor_data FROM logs
+        WHERE substr(timestamp, 1, 10) = ? AND sensor_data IS NOT NULL AND sensor_data != ''
+    ''', (target_date,))
+    sensor_rows = cursor.fetchall()
+    temp_sum = hum_sum = vib_x_sum = vib_y_sum = illu_sum = 0.0
+    sensor_count = 0
+    for row in sensor_rows:
+        try:
+            sd = json.loads(row[0])
+            temp_sum += float(sd.get('temperature', 0))
+            hum_sum += float(sd.get('humidity', 0))
+            vib = sd.get('vibration', {})
+            vib_x_sum += float(vib.get('x', 0)) if isinstance(vib, dict) else 0.0
+            vib_y_sum += float(vib.get('y', 0)) if isinstance(vib, dict) else 0.0
+            illu_sum += float(sd.get('light', 0))
+            sensor_count += 1
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+    avg_sensor = {
+        "temperature": round(temp_sum / sensor_count, 1) if sensor_count > 0 else 0.0,
+        "humidity": round(hum_sum / sensor_count, 1) if sensor_count > 0 else 0.0,
+        "vibration_x": round(vib_x_sum / sensor_count, 2) if sensor_count > 0 else 0.0,
+        "vibration_y": round(vib_y_sum / sensor_count, 2) if sensor_count > 0 else 0.0,
+        "illumination": round(illu_sum / sensor_count, 1) if sensor_count > 0 else 0.0,
+    }
+
+    # 3) 일일 에러 발생 빈도 (daily_error_count)
+    cursor.execute('''
+        SELECT COUNT(*) FROM logs
+        WHERE substr(timestamp, 1, 10) = ? AND machine_status = 'ERROR'
+    ''', (target_date,))
+    daily_error_count = cursor.fetchone()[0] or 0
+
+    # 4) 일일 비전 NG 비율 (daily_vision_ng_rate)
+    cursor.execute('''
+        SELECT 
+            COUNT(*),
+            SUM(CASE WHEN vision_result_code = 'NG' THEN 1 ELSE 0 END)
+        FROM logs
+        WHERE substr(timestamp, 1, 10) = ?
+    ''', (target_date,))
+    ng_row = cursor.fetchone()
+    total = ng_row[0] or 0
+    ng = ng_row[1] or 0
+    daily_vision_ng_rate = round((ng / total * 100), 2) if total > 0 else 0.0
+
+    # 5) 심각도 분포 (severity_distribution)
+    cursor.execute('''
+        SELECT status_info FROM logs
+        WHERE substr(timestamp, 1, 10) = ? AND machine_status = 'ERROR'
+              AND status_info IS NOT NULL AND status_info != ''
+    ''', (target_date,))
+    sev_counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0, "CRITICAL": 0}
+    for row in cursor.fetchall():
+        try:
+            info_list = json.loads(row[0])
+            if isinstance(info_list, list):
+                for item in info_list:
+                    sev = item.get('severity', '').upper()
+                    if sev in sev_counts:
+                        sev_counts[sev] += 1
+            elif isinstance(info_list, dict):
+                sev = info_list.get('severity', '').upper()
+                if sev in sev_counts:
+                    sev_counts[sev] += 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # 6) 장비별 로그 발생량 (log_count_by_device)
+    cursor.execute('''
+        SELECT device_id, COUNT(*) as cnt FROM logs
+        WHERE substr(timestamp, 1, 10) = ?
+        GROUP BY device_id
+        ORDER BY cnt DESC
+    ''', (target_date,))
+    log_by_device = [{"device_id": row[0], "count": row[1]} for row in cursor.fetchall()]
+
+    conn.close()
+    return jsonify({
+        "target_date": target_date,
+        "status_trend_by_hour": status_trend,
+        "average_sensor": avg_sensor,
+        "daily_error_count": daily_error_count,
+        "daily_vision_ng_rate": daily_vision_ng_rate,
+        "severity_distribution": sev_counts,
+        "log_count_by_device": log_by_device
+    })
+
+
+# 📊 통계 API 2. 주간 통계
+# GET /api/stats/weekly?date=YYYY-MM-DD
+@api.route('/api/stats/weekly', methods=['GET'])
+@require_auth
+def get_weekly_stats():
+    from datetime import datetime, timedelta
+    date_str = request.args.get('date')
+    if date_str:
+        ref_date = datetime.strptime(date_str, '%Y-%m-%d')
+    else:
+        ref_date = datetime.now()
+
+    start_of_week = ref_date - timedelta(days=ref_date.weekday())
+    end_of_week = start_of_week + timedelta(days=6)
+    week_start = start_of_week.strftime('%Y-%m-%d')
+    week_end = end_of_week.strftime('%Y-%m-%d')
+    iso_cal = ref_date.isocalendar()
+    target_week = f"{iso_cal[0]}-W{iso_cal[1]:02d}"
+
+    day_names = ['월', '화', '수', '목', '금', '토', '일']
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 1) 요일별 에러 발생 추이 (error_trend_by_day)
+    error_trend = []
+    for i in range(7):
+        d = (start_of_week + timedelta(days=i)).strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT COUNT(*) FROM logs
+            WHERE substr(timestamp, 1, 10) = ? AND machine_status = 'ERROR'
+        ''', (d,))
+        error_trend.append({"day": day_names[i], "error_count": cursor.fetchone()[0] or 0})
+
+    # 2) 장비별 에러 발생 순위 (error_ranking_by_device)
+    cursor.execute('''
+        SELECT device_id, COUNT(*) as cnt FROM logs
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ? AND machine_status = 'ERROR'
+        GROUP BY device_id ORDER BY cnt DESC
+    ''', (week_start, week_end))
+    error_ranking = [{"device_id": row[0], "error_count": row[1]} for row in cursor.fetchall()]
+
+    # 3) 환경 데이터 이상치 (sensor_anomaly_by_day)
+    anomaly_data = []
+    for i in range(7):
+        d = (start_of_week + timedelta(days=i)).strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT sensor_data FROM logs
+            WHERE substr(timestamp, 1, 10) = ? AND sensor_data IS NOT NULL AND sensor_data != ''
+        ''', (d,))
+        anomaly_count = 0
+        for row in cursor.fetchall():
+            try:
+                sd = json.loads(row[0])
+                temp = float(sd.get('temperature', 25))
+                humidity = float(sd.get('humidity', 50))
+                if temp > 40 or temp < 10 or humidity > 80 or humidity < 20:
+                    anomaly_count += 1
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        anomaly_data.append({"day": day_names[i], "anomaly_count": anomaly_count})
+
+    # 4) 에러 코드 TOP5 (top5_error_codes)
+    cursor.execute('''
+        SELECT status_info FROM logs
+        WHERE substr(timestamp, 1, 10) BETWEEN ? AND ? AND machine_status = 'ERROR'
+              AND status_info IS NOT NULL AND status_info != ''
+    ''', (week_start, week_end))
+    code_counter = {}
+    for row in cursor.fetchall():
+        try:
+            info_list = json.loads(row[0])
+            if isinstance(info_list, list):
+                for item in info_list:
+                    code = item.get('code', 'UNKNOWN')
+                    code_counter[code] = code_counter.get(code, 0) + 1
+            elif isinstance(info_list, dict):
+                code = info_list.get('code', 'UNKNOWN')
+                code_counter[code] = code_counter.get(code, 0) + 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+    top5 = sorted(code_counter.items(), key=lambda x: x[1], reverse=True)[:5]
+    top5_codes = [{"code": c, "count": n} for c, n in top5]
+
+    # 5) 장비 상태 분포 (status_distribution)
+    cursor.execute('''
+        SELECT 
+            SUM(CASE WHEN machine_status = 'RUN' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN machine_status = 'ERROR' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN machine_status NOT IN ('RUN', 'ERROR') THEN 1 ELSE 0 END)
+        FROM logs WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+    ''', (week_start, week_end))
+    st_row = cursor.fetchone()
+
+    conn.close()
+    return jsonify({
+        "target_week": target_week,
+        "error_trend_by_day": error_trend,
+        "error_ranking_by_device": error_ranking,
+        "sensor_anomaly_by_day": anomaly_data,
+        "top5_error_codes": top5_codes,
+        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0}
+    })
+
+
+# 📊 통계 API 3. 월간 통계
+# GET /api/stats/monthly?month=YYYY-MM
+@api.route('/api/stats/monthly', methods=['GET'])
+@require_auth
+def get_monthly_stats():
+    from datetime import datetime
+    target_month = request.args.get('month')
+    if not target_month:
+        target_month = datetime.now().strftime('%Y-%m')
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 1) 월간 설비 상태 비율 (status_distribution)
+    cursor.execute('''
+        SELECT 
+            SUM(CASE WHEN machine_status = 'RUN' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN machine_status = 'ERROR' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN machine_status NOT IN ('RUN', 'ERROR') THEN 1 ELSE 0 END)
+        FROM logs WHERE substr(timestamp, 1, 7) = ?
+    ''', (target_month,))
+    st_row = cursor.fetchone()
+
+    # 2) 핵심 에러 코드 분포 (error_code_distribution)
+    cursor.execute('''
+        SELECT status_info FROM logs
+        WHERE substr(timestamp, 1, 7) = ? AND machine_status = 'ERROR'
+              AND status_info IS NOT NULL AND status_info != ''
+    ''', (target_month,))
+    code_counter = {}
+    for row in cursor.fetchall():
+        try:
+            info_list = json.loads(row[0])
+            if isinstance(info_list, list):
+                for item in info_list:
+                    code = item.get('code', 'UNKNOWN')
+                    code_counter[code] = code_counter.get(code, 0) + 1
+            elif isinstance(info_list, dict):
+                code = info_list.get('code', 'UNKNOWN')
+                code_counter[code] = code_counter.get(code, 0) + 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+    total_errors = sum(code_counter.values()) if code_counter else 1
+    error_code_dist = sorted(
+        [{"code": c, "count": n, "percentage": round(n / total_errors * 100, 2)} for c, n in code_counter.items()],
+        key=lambda x: x['count'], reverse=True
+    )
+
+    # 3) 월간 평균 센서 변화 - 주차별 (sensor_trend_by_week)
+    sensor_trend = []
+    for week_num in range(1, 5):
+        day_start = (week_num - 1) * 7 + 1
+        day_end = min(week_num * 7, 28)
+        start_d = f"{target_month}-{day_start:02d}"
+        end_d = f"{target_month}-{day_end:02d}"
+        cursor.execute('''
+            SELECT sensor_data FROM logs
+            WHERE substr(timestamp, 1, 10) BETWEEN ? AND ?
+                  AND sensor_data IS NOT NULL AND sensor_data != ''
+        ''', (start_d, end_d))
+        t_sum = h_sum = vx_sum = 0.0
+        cnt = 0
+        for row in cursor.fetchall():
+            try:
+                sd = json.loads(row[0])
+                t_sum += float(sd.get('temperature', 0))
+                h_sum += float(sd.get('humidity', 0))
+                vib = sd.get('vibration', {})
+                vx_sum += float(vib.get('x', 0)) if isinstance(vib, dict) else 0.0
+                cnt += 1
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        sensor_trend.append({
+            "week": f"{week_num}주",
+            "temperature": round(t_sum / cnt, 1) if cnt > 0 else 0.0,
+            "humidity": round(h_sum / cnt, 1) if cnt > 0 else 0.0,
+            "vibration_x": round(vx_sum / cnt, 2) if cnt > 0 else 0.0,
+        })
+
+    # 4) 장비별 에러 누적 (error_accumulation_by_device)
+    cursor.execute('''
+        SELECT device_id, COUNT(*) as cnt FROM logs
+        WHERE substr(timestamp, 1, 7) = ? AND machine_status = 'ERROR'
+        GROUP BY device_id ORDER BY cnt DESC
+    ''', (target_month,))
+    error_accum = [{"device_id": row[0], "total_error": row[1]} for row in cursor.fetchall()]
+
+    # 5) 부위별 에러 발생률 (error_rate_by_part) - defect_type 기반
+    cursor.execute('''
+        SELECT defect_type, COUNT(*) as cnt FROM logs
+        WHERE substr(timestamp, 1, 7) = ? AND defect_type IS NOT NULL
+              AND defect_type != '' AND vision_result_code = 'NG'
+        GROUP BY defect_type ORDER BY cnt DESC
+    ''', (target_month,))
+    part_rows = cursor.fetchall()
+    total_defects = sum(r[1] for r in part_rows) if part_rows else 1
+    error_rate_part = [{"part_location": row[0], "percentage": round(row[1] / total_defects * 100, 2)} for row in part_rows]
+
+    conn.close()
+    return jsonify({
+        "target_month": target_month,
+        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0},
+        "error_code_distribution": error_code_dist,
+        "sensor_trend_by_week": sensor_trend,
+        "error_accumulation_by_device": error_accum,
+        "error_rate_by_part": error_rate_part
+    })
+
+
+# 📊 통계 API 4. 연간 통계
+# GET /api/stats/yearly?year=YYYY
+@api.route('/api/stats/yearly', methods=['GET'])
+@require_auth
+def get_yearly_stats():
+    from datetime import datetime
+    target_year = request.args.get('year')
+    if not target_year:
+        target_year = str(datetime.now().year)
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 1) 분기별 에러 발생 추이 (error_trend_by_quarter)
+    quarter_data = []
+    for q in range(1, 5):
+        m_start = (q - 1) * 3 + 1
+        m_end = q * 3
+        start_d = f"{target_year}-{m_start:02d}"
+        end_d = f"{target_year}-{m_end:02d}"
+        cursor.execute('''
+            SELECT COUNT(*) FROM logs
+            WHERE substr(timestamp, 1, 7) BETWEEN ? AND ? AND machine_status = 'ERROR'
+        ''', (start_d, end_d))
+        quarter_data.append({"quarter": f"{q}분기", "error_count": cursor.fetchone()[0] or 0})
+
+    # 2) 연간 상태 분포 (status_distribution)
+    cursor.execute('''
+        SELECT 
+            SUM(CASE WHEN machine_status = 'RUN' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN machine_status = 'ERROR' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN machine_status NOT IN ('RUN', 'ERROR') THEN 1 ELSE 0 END)
+        FROM logs WHERE substr(timestamp, 1, 4) = ?
+    ''', (target_year,))
+    st_row = cursor.fetchone()
+
+    # 3) 심각도 기반 리스크 점수 (risk_score)
+    cursor.execute('''
+        SELECT status_info FROM logs
+        WHERE substr(timestamp, 1, 4) = ? AND machine_status = 'ERROR'
+              AND status_info IS NOT NULL AND status_info != ''
+    ''', (target_year,))
+    risk_score = 0
+    severity_weights = {"CRITICAL": 10, "HIGH": 5, "MEDIUM": 2, "LOW": 1}
+    for row in cursor.fetchall():
+        try:
+            info_list = json.loads(row[0])
+            if isinstance(info_list, list):
+                for item in info_list:
+                    sev = item.get('severity', '').upper()
+                    risk_score += severity_weights.get(sev, 0)
+            elif isinstance(info_list, dict):
+                sev = info_list.get('severity', '').upper()
+                risk_score += severity_weights.get(sev, 0)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # 4) 장기 에러 발생 트렌드 (long_term_error_trend)
+    long_term = []
+    for m in range(1, 13):
+        month_str = f"{target_year}-{m:02d}"
+        cursor.execute('''
+            SELECT COUNT(*) FROM logs
+            WHERE substr(timestamp, 1, 7) = ? AND machine_status = 'ERROR'
+        ''', (month_str,))
+        long_term.append({"month": f"{m:02d}월", "error_count": cursor.fetchone()[0] or 0})
+
+    # 5) 연간 비전 NG 추이 (vision_ng_trend_by_month)
+    vision_ng_trend = []
+    for m in range(1, 13):
+        month_str = f"{target_year}-{m:02d}"
+        cursor.execute('''
+            SELECT COUNT(*), SUM(CASE WHEN vision_result_code = 'NG' THEN 1 ELSE 0 END)
+            FROM logs WHERE substr(timestamp, 1, 7) = ?
+        ''', (month_str,))
+        vr = cursor.fetchone()
+        total_v = vr[0] or 0
+        ng_v = vr[1] or 0
+        ng_rate = round((ng_v / total_v * 100), 2) if total_v > 0 else 0.0
+        vision_ng_trend.append({"month": f"{m:02d}월", "ng_rate": ng_rate})
+
+    # 6) 연간 센서 안정성 분석 (sensor_stability_by_month)
+    stability = []
+    for m in range(1, 13):
+        month_str = f"{target_year}-{m:02d}"
+        cursor.execute('''
+            SELECT sensor_data FROM logs
+            WHERE substr(timestamp, 1, 7) = ? AND sensor_data IS NOT NULL AND sensor_data != ''
+        ''', (month_str,))
+        t_sum = h_sum = v_sum = 0.0
+        cnt = 0
+        for row in cursor.fetchall():
+            try:
+                sd = json.loads(row[0])
+                t_sum += float(sd.get('temperature', 0))
+                h_sum += float(sd.get('humidity', 0))
+                vib = sd.get('vibration', {})
+                v_sum += float(vib.get('x', 0)) if isinstance(vib, dict) else 0.0
+                cnt += 1
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        stability.append({
+            "month": f"{m:02d}월",
+            "avg_temperature": round(t_sum / cnt, 1) if cnt > 0 else 0.0,
+            "avg_humidity": round(h_sum / cnt, 1) if cnt > 0 else 0.0,
+            "avg_vibration": round(v_sum / cnt, 2) if cnt > 0 else 0.0,
+        })
+
+    conn.close()
+    return jsonify({
+        "target_year": target_year,
+        "error_trend_by_quarter": quarter_data,
+        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0},
+        "risk_score": risk_score,
+        "long_term_error_trend": long_term,
+        "vision_ng_trend_by_month": vision_ng_trend,
+        "sensor_stability_by_month": stability
+    })
+
+
 # 📌 API 6. 잠긴 장비 목록 조회
 # GET /api/devices/locked
 # 권한: MASTER, TECHNICIAN만
