@@ -151,6 +151,29 @@ def register_events(sio):
 
         print(f"🔓 전체 장비 잠금 해제 완료: {unlocked_list}")
 
+    # 🔓 웹 UI에서 개별 장비 '잠금 해제' 버튼을 눌렀을 때 들어오는 이벤트
+    @sio.on('unlock_device')
+    def on_unlock_device(sid, data):
+        device_id = data.get("device_id")
+        if device_id not in locked_devices:
+            return
+
+        del locked_devices[device_id]
+        if device_id in escalation_sessions:
+            del escalation_sessions[device_id]
+        device_status[device_id] = {"status": "IDLE"}
+
+        sio.emit('device_unlock', {
+            "device_id": device_id,
+            "resolved_by": "AdminPC"
+        })
+
+        sio.emit('error_resolved', {
+            "device_id": device_id,
+            "resolved_by": "AdminPC"
+        })
+
+        print(f"🔓 개별 장비 잠금 해제 완료: {device_id}")
 
 
     # 🌟 라즈베리 파이에서 검사 데이터를 실시간으로 받을 때
@@ -163,8 +186,8 @@ def register_events(sio):
         machine_status = body.get('machine_status', 'UNKNOWN')
         vision_result = body.get('vision_result', {})
 
-        # 장비 상태 실시간 갱신 (잠긴 장비는 덮어쓰지 않음)
-        if device_id not in locked_devices:
+        # 장비 상태 실시간 갱신 (잠긴 장비는 덮어쓰지 않음, ERROR는 아래에서 별도 처리)
+        if device_id not in locked_devices and machine_status != "ERROR":
             device_status[device_id] = {"status": machine_status}
 
         # 1) DB 저장을 위해 큐에 데이터 적재 (튜플 형태)
@@ -221,6 +244,32 @@ def register_events(sio):
         else:
             if int(body.get('sequence', 0)) % 10 == 0:
                 print(f"[{device_id}] 연속 가동 중 - {body.get('sequence')}건 수신 완료")
+    # 🔌 웹 UI에서 전원 ON 요청
+    @sio.on('ui_power_on')
+    def on_ui_power_on(sid, data):
+        device_id = data.get('device_id')
+        if device_id and device_id not in locked_devices:
+            device_status[device_id] = {"status": "IDLE"}
+            print(f"🔌 [{device_id}] 전원 ON (IDLE 전환)")
+            sio.emit('device_status_changed', {
+                "device_id": device_id,
+                "status": "IDLE",
+                "message": "장비 전원이 켜졌습니다."
+            })
+
+    # 🔌 웹 UI에서 전원 OFF 요청
+    @sio.on('ui_power_off')
+    def on_ui_power_off(sid, data):
+        device_id = data.get('device_id')
+        if device_id and device_id not in locked_devices:
+            device_status[device_id] = {"status": "STOP"}
+            print(f"🔌 [{device_id}] 전원 OFF (STOP 전환)")
+            sio.emit('device_status_changed', {
+                "device_id": device_id,
+                "status": "STOP",
+                "message": "장비 전원이 꺼졌습니다."
+            })
+
     # 🔄 연속 가동 장비: 웹 UI에서 시작 버튼을 눌렀을 때
     @sio.on('ui_start_continuous')
     def on_ui_start_continuous(sid, data):
