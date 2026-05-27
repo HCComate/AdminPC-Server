@@ -663,6 +663,19 @@ def resolve_device_error(device_id):
     if device_id in escalation_sessions:
         del escalation_sessions[device_id]
 
+    # 📝 잠금 해제 이력을 DB에 영구 저장
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO resolve_logs (device_id, resolved_by) VALUES (?, ?)',
+            (device_id, username)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ resolve_logs 저장 실패: {e}")
+
     print(f"🔓 [{device_id}] 장비 잠금 해제됨 (해제자: {username})")
 
     # Socket.IO로 전체 클라이언트에 해제 알림 (main.py에서 sio를 주입받아 사용)
@@ -688,9 +701,30 @@ def resolve_device_error(device_id):
 def get_registered_devices():
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT device_id, name, model_name, created_at FROM devices ORDER BY id ASC')
+    cursor.execute('SELECT device_id, name, model_name, manager_username, created_at FROM devices ORDER BY id ASC')
     devices = [dict(row) for row in cursor.fetchall()]
     conn.close()
+
+    # 담당자 상세 정보 매핑 (users.db 활용)
+    try:
+        from auth import get_users_db
+        u_conn = get_users_db()
+        u_cursor = u_conn.cursor()
+        u_cursor.execute("SELECT username, nickname, role FROM users")
+        user_dict = {row['username']: {'name': row['nickname'] or row['username'], 'role': row['role']} for row in u_cursor.fetchall()}
+        u_conn.close()
+
+        for d in devices:
+            m_user = d.get('manager_username')
+            if m_user and m_user in user_dict:
+                d['manager_name'] = user_dict[m_user]['name']
+                d['manager_role'] = user_dict[m_user]['role']
+            else:
+                d['manager_name'] = None
+                d['manager_role'] = None
+    except Exception as e:
+        print(f"사용자 DB 연동 중 오류: {e}")
+
     return jsonify(devices)
 
 # 📌 API 9. 새 장비 등록
@@ -703,17 +737,26 @@ def register_device():
     device_id = data.get('device_id')
     name = data.get('name')
     model_name = data.get('model_name')
+    manager_username = data.get('manager_username')
 
     if not device_id or not name or not model_name:
         return jsonify({"error": "device_id, name, model_name이 모두 필요합니다."}), 400
 
     conn = get_db()
     cursor = conn.cursor()
+
+    # 중복 담당자 검증 (1인 1장비)
+    if manager_username:
+        cursor.execute("SELECT device_id FROM devices WHERE manager_username = ?", (manager_username,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({"error": f"해당 사용자({manager_username})는 이미 다른 장비의 담당자로 지정되어 있습니다."}), 400
+
     try:
         cursor.execute('''
-            INSERT INTO devices (device_id, name, model_name)
-            VALUES (?, ?, ?)
-        ''', (device_id, name, model_name))
+            INSERT INTO devices (device_id, name, model_name, manager_username)
+            VALUES (?, ?, ?, ?)
+        ''', (device_id, name, model_name, manager_username))
         conn.commit()
     except Exception as e:
         conn.close()
@@ -726,6 +769,35 @@ def register_device():
         device_status[device_id] = {"status": "IDLE"}
         
     return jsonify({"message": f"장비 '{device_id}'가 성공적으로 등록되었습니다."}), 201
+
+# 📌 API 9-1. 장비 담당자 변경
+# PUT /api/devices/registered/<device_id>
+# 권한: MASTER만
+@api.route('/api/devices/registered/<device_id>', methods=['PUT'])
+@require_permission('device_manage')
+def update_device_manager(device_id):
+    data = request.json
+    manager_username = data.get('manager_username')
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 중복 담당자 검증 (1인 1장비)
+    if manager_username:
+        cursor.execute("SELECT device_id FROM devices WHERE manager_username = ? AND device_id != ?", (manager_username, device_id))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({"error": f"해당 사용자({manager_username})는 이미 다른 장비의 담당자로 지정되어 있습니다."}), 400
+
+    cursor.execute('UPDATE devices SET manager_username = ? WHERE device_id = ?', (manager_username, device_id))
+    
+    if cursor.rowcount == 0:
+        conn.close()
+        return jsonify({"error": "장비를 찾을 수 없습니다."}), 404
+        
+    conn.commit()
+    conn.close()
+    return jsonify({"message": f"장비 '{device_id}'의 담당자가 변경되었습니다."})
 
 # 📌 API 10. 장비 삭제
 # DELETE /api/devices/registered/<device_id>
@@ -812,3 +884,31 @@ def export_and_clear_logs():
         "file": filename,
         "count": row_count
     })
+
+
+# 📌 API 12. 장비 잠금 해제 이력 조회
+# GET /api/resolve-logs?device_id=RASP_PI_01&limit=50
+# 권한: 로그인 사용자 전원
+@api.route('/api/resolve-logs', methods=['GET'])
+@require_auth
+def get_resolve_logs():
+    device_id = request.args.get('device_id')
+    limit = request.args.get('limit', 50, type=int)
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if device_id:
+        cursor.execute(
+            'SELECT * FROM resolve_logs WHERE device_id = ? ORDER BY id DESC LIMIT ?',
+            (device_id, limit)
+        )
+    else:
+        cursor.execute(
+            'SELECT * FROM resolve_logs ORDER BY id DESC LIMIT ?',
+            (limit,)
+        )
+
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(rows)

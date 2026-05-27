@@ -43,9 +43,28 @@ def init_db():
             device_id TEXT UNIQUE NOT NULL,
             name TEXT NOT NULL,
             model_name TEXT NOT NULL,
+            manager_username TEXT,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         )
     ''')
+
+    # 기존 DB 호환을 위한 마이그레이션
+    try:
+        cursor.execute("ALTER TABLE devices ADD COLUMN manager_username TEXT")
+        print("📋 기존 devices 테이블에 manager_username 컬럼 추가 완료.")
+    except sqlite3.OperationalError:
+        pass  # 컬럼이 이미 존재하면 무시
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS resolve_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            resolved_by TEXT NOT NULL,
+            resolved_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_resolve_logs_device ON resolve_logs(device_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_resolve_logs_time ON resolve_logs(resolved_at)')
 
     # 시드 데이터 삽입: devices 테이블이 비어있는 경우 기본 장비 5대 추가
     cursor.execute('SELECT COUNT(*) FROM devices')

@@ -4,26 +4,68 @@ import eventlet
 from config import device_status, data_queue, locked_devices, online_users, escalation_sessions
 from auth import decode_token
 
-def build_escalation_queue():
-    operators = []
-    technicians = []
-    masters = []
+def build_escalation_queue(device_id):
+    # 1. 담당자 조회
+    from database import get_db
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT manager_username FROM devices WHERE device_id = ?", (device_id,))
+    row = cursor.fetchone()
+    manager_username = row['manager_username'] if row else None
+    conn.close()
+
+    manager_role = None
+    if manager_username:
+        from auth import get_users_db
+        u_conn = get_users_db()
+        u_cursor = u_conn.cursor()
+        u_cursor.execute("SELECT role FROM users WHERE username = ?", (manager_username,))
+        u_row = u_cursor.fetchone()
+        manager_role = u_row['role'] if u_row else None
+        u_conn.close()
+
+    # 2. 담당자 sid 찾기
+    manager_sid = None
     for sid, info in online_users.items():
-        if info['role'] == 'OPERATOR':
-            operators.append(sid)
-        elif info['role'] == 'TECHNICIAN':
-            technicians.append(sid)
-        elif info['role'] == 'MASTER':
-            masters.append(sid)
+        if info.get('username') == manager_username:
+            manager_sid = sid
+            break
+
+    queue = []
     
-    random.shuffle(operators)
-    random.shuffle(technicians)
-    random.shuffle(masters)
-    
-    return operators + technicians + masters
+    # 0순위: 담당자 추가
+    if manager_sid:
+        queue.append(manager_sid)
+
+    # 다른 인원 분류 (OPERATOR 제외)
+    other_technicians = []
+    other_masters = []
+    for sid, info in online_users.items():
+        if sid == manager_sid:
+            continue
+        role = info.get('role')
+        if role == 'TECHNICIAN':
+            other_technicians.append(sid)
+        elif role == 'MASTER':
+            other_masters.append(sid)
+
+    import random
+    random.shuffle(other_technicians)
+    random.shuffle(other_masters)
+
+    # 직급별 정책 적용
+    if manager_role == 'MASTER':
+        # 담당자가 MASTER면 다른 MASTER에게만 에스컬레이션
+        queue.extend(other_masters)
+    else:
+        # 담당자가 TECHNICIAN이거나 없는 경우 (기본)
+        queue.extend(other_technicians)
+        queue.extend(other_masters)
+
+    return queue
 
 def start_escalation(sio, device_id, error_data):
-    queue = build_escalation_queue()
+    queue = build_escalation_queue(device_id)
     if not queue:
         # 온라인 사용자 없음 -> 0순위 브로드캐스트
         sio.emit('critical_alert', error_data)
@@ -51,9 +93,8 @@ def notify_next_escalation(sio, device_id):
         session["timer_task"] = None
 
     if not session["queue"]:
-        # 모든 큐 소진 시 다시 전체 알림(fallback)
-        sio.emit('critical_alert', session["error_data"])
-        print(f"🚨 [{device_id}] 에스컬레이션 큐 소진! 전체 브로드캐스트 발송.")
+        # 모든 큐 소진 시 방치 (기존의 브로드캐스트 제거)
+        print(f"🚨 [{device_id}] 에스컬레이션 큐 소진! 응답자가 없어 장비가 오류 상태로 방치됩니다.")
         return
 
     next_sid = session["queue"].pop(0)
@@ -110,27 +151,7 @@ def register_events(sio):
 
         print(f"🔓 전체 장비 잠금 해제 완료: {unlocked_list}")
 
-    # 🌟 웹 UI에서 '특정 장비 시작 버튼'을 눌렀을 때 들어오는 이벤트
-    @sio.on('ui_start_btn')
-    def on_ui_start_btn(sid, data):
-        target_device = data.get('device_id')
 
-        # ⛔ 잠긴 장비는 시작 차단
-        if target_device in locked_devices:
-            sio.emit('start_blocked', {
-                "device_id": target_device,
-                "reason": "치명적 오류가 해결되지 않았습니다."
-            }, to=sid)
-            print(f"⛔ [{target_device}] 잠금 상태 - 가동 요청 거부됨")
-            return
-
-        print(f"\n▶️ 웹 UI로부터 [{target_device}] 가동 요청을 받았습니다.")
-
-        # 장비 상태를 IDLE로 초기 등록 (아직 데이터 수신 전)
-        device_status[target_device] = {"status": "IDLE"}
-
-        # 라즈베리 파이에게 해당 장비를 켜라고 명령 하달
-        sio.emit('start_request', data)
 
     # 🌟 라즈베리 파이에서 검사 데이터를 실시간으로 받을 때
     @sio.on('device_data')
@@ -198,17 +219,8 @@ def register_events(sio):
                 device_status[device_id] = {"status": "RUN"}
                 print(f"⚠️ [{device_id}] 오류 발생(가동 유지) 코드: {', '.join(codes)}")
         else:
-            print(f"[{device_id}] {body.get('sequence')}/100 수신 완료")
-
-    @sio.on('batch_complete')
-    def on_batch_complete(sid, data):
-        device_id = data.get('device_id')
-        # 검사 완료 → 장비 상태를 STOP으로 변경
-        device_status[device_id] = {"status": "STOP"}
-        print(f"\n🏁 --- [{device_id}] 100개 검사 완료 --- 🏁\n")
-        # 프론트엔드로 완료 이벤트 포워딩
-        sio.emit('batch_complete_notify', data)
-
+            if int(body.get('sequence', 0)) % 10 == 0:
+                print(f"[{device_id}] 연속 가동 중 - {body.get('sequence')}건 수신 완료")
     # 🔄 연속 가동 장비: 웹 UI에서 시작 버튼을 눌렀을 때
     @sio.on('ui_start_continuous')
     def on_ui_start_continuous(sid, data):
