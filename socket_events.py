@@ -171,7 +171,8 @@ def register_events(sio):
             del locked_devices[device_id]
             if device_id in escalation_sessions:
                 del escalation_sessions[device_id]
-            device_status[device_id] = {"status": "IDLE"}
+            
+            set_standby_and_start_timer(sio, device_id)
 
             # 라즈베리파이에 잠금 해제 명령
             sio.emit('device_unlock', {
@@ -183,6 +184,13 @@ def register_events(sio):
             sio.emit('error_resolved', {
                 "device_id": device_id,
                 "resolved_by": "AdminPC (일괄 해제)"
+            })
+            
+            # 상태 변경 알림
+            sio.emit('device_status_changed', {
+                "device_id": device_id,
+                "status": "STANDBY",
+                "message": "장비 잠금이 일괄 해제되었습니다. 가동 준비 중입니다."
             })
 
         print(f"🔓 전체 장비 잠금 해제 완료: {unlocked_list}")
@@ -197,7 +205,8 @@ def register_events(sio):
         del locked_devices[device_id]
         if device_id in escalation_sessions:
             del escalation_sessions[device_id]
-        device_status[device_id] = {"status": "IDLE"}
+            
+        set_standby_and_start_timer(sio, device_id)
 
         sio.emit('device_unlock', {
             "device_id": device_id,
@@ -207,6 +216,12 @@ def register_events(sio):
         sio.emit('error_resolved', {
             "device_id": device_id,
             "resolved_by": "AdminPC"
+        })
+
+        sio.emit('device_status_changed', {
+            "device_id": device_id,
+            "status": "STANDBY",
+            "message": "장비 잠금이 해제되었습니다. 가동 준비 중입니다."
         })
 
         print(f"🔓 개별 장비 잠금 해제 완료: {device_id}")
