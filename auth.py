@@ -193,7 +193,7 @@ def login():
     if not body:
         return jsonify({"error": "요청 본문이 필요합니다."}), 400
 
-    username = body.get('username')
+    username = body.get('username') or body.get('userId')
     password = body.get('password')
 
     if not username or not password:
