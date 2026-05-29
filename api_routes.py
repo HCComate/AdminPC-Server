@@ -929,3 +929,182 @@ def get_resolve_logs():
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return jsonify(rows)
+
+
+# ════════════════════════════════════════════════════════════
+# 📱 모바일 앱 호환용 API (기존 API는 수정하지 않음)
+# ════════════════════════════════════════════════════════════
+
+# 📱 헬스체크 (모바일 앱 마이페이지 "연결 테스트" 버튼용)
+@api.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "OK", "message": "AdminPC Server is running."})
+
+
+# 📱 장비 상세 정보 (모바일 앱 장비 상세 화면용)
+@api.route('/api/devices/<device_id>/detail', methods=['GET'])
+@require_auth
+def get_device_detail(device_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT * FROM logs WHERE device_id = ? ORDER BY id DESC LIMIT 1',
+        (device_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({
+            "deviceId": device_id,
+            "batchId": "",
+            "modelName": "",
+            "sequence": 0,
+            "machineStatus": device_status.get(device_id, {}).get("status", "STOP"),
+            "timestamp": "",
+            "temperature": 0, "vibrationX": 0, "vibrationY": 0,
+            "illumination": 0, "humidity": 0,
+            "statusInfos": [],
+            "visionResult": {"result": "OK", "defectType": "NONE", "confidence": 0, "inspectionArea": "ALL", "imageUrl": None}
+        })
+
+    r = dict(row)
+    sensor = json.loads(r.get('sensor_data') or '{}')
+    status_info_raw = json.loads(r.get('status_info') or '[]')
+    vision_raw = json.loads(r.get('vision_result') or '{}')
+
+    status_infos = []
+    for si in status_info_raw:
+        status_infos.append({
+            "code": si.get("code", ""),
+            "msg": si.get("msg", ""),
+            "severity": si.get("severity", "LOW"),
+            "direction": si.get("direction", "NONE"),
+            "partLocation": si.get("part_location", ""),
+            "isCaptureRequired": si.get("is_capture_required", False)
+        })
+
+    return jsonify({
+        "deviceId": r.get("device_id", device_id),
+        "batchId": r.get("batch_id", ""),
+        "modelName": r.get("model_name", ""),
+        "sequence": r.get("sequence", 0),
+        "machineStatus": r.get("machine_status", "IDLE"),
+        "timestamp": r.get("timestamp", ""),
+        "temperature": sensor.get("temperature", 0),
+        "vibrationX": sensor.get("vibration_x", 0),
+        "vibrationY": sensor.get("vibration_y", 0),
+        "illumination": sensor.get("illumination", 0),
+        "humidity": sensor.get("humidity", 0),
+        "statusInfos": status_infos,
+        "visionResult": {
+            "result": vision_raw.get("result", r.get("vision_result_code", "OK")),
+            "defectType": vision_raw.get("defect_type", r.get("defect_type", "NONE")),
+            "confidence": vision_raw.get("confidence", 0),
+            "inspectionArea": vision_raw.get("inspection_area", "ALL"),
+            "imageUrl": vision_raw.get("image_url", None)
+        }
+    })
+
+
+# 📱 최근 검사 로그 (모바일 앱 로그 탭용)
+@api.route('/api/inspections/recent', methods=['GET'])
+@require_auth
+def get_inspections_recent():
+    limit = request.args.get('limit', 50, type=int)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM logs ORDER BY id DESC LIMIT ?', (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    result = []
+    for row in rows:
+        r = dict(row)
+        sensor = json.loads(r.get('sensor_data') or '{}')
+        status_info_raw = json.loads(r.get('status_info') or '[]')
+        vision_raw = json.loads(r.get('vision_result') or '{}')
+
+        status_infos = []
+        for si in status_info_raw:
+            status_infos.append({
+                "code": si.get("code", ""),
+                "msg": si.get("msg", ""),
+                "severity": si.get("severity", "LOW"),
+                "direction": si.get("direction", "NONE"),
+                "partLocation": si.get("part_location", ""),
+                "isCaptureRequired": si.get("is_capture_required", False)
+            })
+
+        result.append({
+            "deviceId": r.get("device_id", ""),
+            "batchId": r.get("batch_id", ""),
+            "modelName": r.get("model_name", ""),
+            "sequence": r.get("sequence", 0),
+            "machineStatus": r.get("machine_status", "IDLE"),
+            "timestamp": r.get("timestamp", ""),
+            "temperature": sensor.get("temperature", 0),
+            "vibrationX": sensor.get("vibration_x", 0),
+            "vibrationY": sensor.get("vibration_y", 0),
+            "illumination": sensor.get("illumination", 0),
+            "humidity": sensor.get("humidity", 0),
+            "statusInfos": status_infos,
+            "visionResult": {
+                "result": vision_raw.get("result", r.get("vision_result_code", "OK")),
+                "defectType": vision_raw.get("defect_type", r.get("defect_type", "NONE")),
+                "confidence": vision_raw.get("confidence", 0),
+                "inspectionArea": vision_raw.get("inspection_area", "ALL"),
+                "imageUrl": vision_raw.get("image_url", None)
+            }
+        })
+
+    return jsonify({"success": True, "data": result})
+
+
+# 📱 미해결 에러 알림 목록 (모바일 앱 에러 폴링용)
+@api.route('/api/alerts/pending', methods=['GET'])
+@require_auth
+def get_pending_alerts():
+    alerts = []
+    for device_id, info in locked_devices.items():
+        alerts.append({
+            "id": device_id,
+            "deviceId": device_id,
+            "errorCode": info.get("error_codes", ["UNKNOWN"])[0] if isinstance(info, dict) else "UNKNOWN",
+            "errorMsg": info.get("message", "장비 오류 발생") if isinstance(info, dict) else "장비 오류 발생",
+            "severity": "CRITICAL",
+            "createdAt": info.get("locked_at", "") if isinstance(info, dict) else ""
+        })
+    return jsonify({"success": True, "data": alerts})
+
+
+# 📱 에러 알림 수락/거절 (모바일 앱 에스컬레이션 응답)
+@api.route('/api/alerts/<alert_id>/respond', methods=['POST'])
+@require_auth
+def respond_to_alert(alert_id):
+    data = request.json or {}
+    response_type = data.get('response', 'ACCEPTED')
+
+    if response_type == 'ACCEPTED':
+        # 수락 시 해당 장비의 잠금 해제 처리
+        if alert_id in locked_devices:
+            from socket_events import set_standby_and_start_timer
+            del locked_devices[alert_id]
+            if alert_id in escalation_sessions:
+                del escalation_sessions[alert_id]
+
+            if hasattr(api, '_sio'):
+                set_standby_and_start_timer(api._sio, alert_id)
+                api._sio.emit('device_status_changed', {
+                    "device_id": alert_id,
+                    "status": "STANDBY",
+                    "message": "모바일 앱에서 오류가 해제되었습니다."
+                })
+                api._sio.emit('error_resolved', {
+                    "device_id": alert_id,
+                    "resolved_by": request.user.get('username', 'mobile_user')
+                })
+            else:
+                device_status[alert_id] = {"status": "STANDBY"}
+
+    return jsonify({"success": True, "message": f"Alert {alert_id} {response_type}"})
