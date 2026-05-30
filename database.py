@@ -81,13 +81,25 @@ def init_db():
             ('RASP_PI_02', '비전검사 장비 #2', 'SMT_CHIP_A20'),
             ('RASP_PI_03', '비전검사 장비 #3', 'SMT_CHIP_B15'),
             ('RASP_PI_04', '비전검사 장비 #4', 'SMT_CHIP_B15'),
-            ('RASP_PI_05', '비전검사 장비 #5', 'SMT_CHIP_C10')
+            ('RASP_PI_05', '비전검사 장비 #5', 'SMT_CHIP_C10'),
+            ('CONT_PI_01', '연속 가동 장비 #1', 'CONT_SMT_X1'),
+            ('CONT_PI_02', '연속 가동 장비 #2', 'CONT_SMT_X2')
         ]
         cursor.executemany('''
             INSERT INTO devices (device_id, name, model_name)
             VALUES (?, ?, ?)
         ''', seed_devices)
-        print("🌱 기본 장비 5대가 DB에 추가되었습니다.")
+        print("🌱 기본 장비 7대가 DB에 추가되었습니다.")
+
+    # 기존 DB에 연속 가동 장비가 없을 경우를 대비해 삽입 시도 (device_id가 UNIQUE이므로 중복 무시)
+    cursor.execute('''
+        INSERT OR IGNORE INTO devices (device_id, name, model_name) 
+        VALUES ('CONT_PI_01', '연속 가동 장비 #1', 'CONT_SMT_X1')
+    ''')
+    cursor.execute('''
+        INSERT OR IGNORE INTO devices (device_id, name, model_name) 
+        VALUES ('CONT_PI_02', '연속 가동 장비 #2', 'CONT_SMT_X2')
+    ''')
 
     conn.commit()
     conn.close()
