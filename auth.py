@@ -74,11 +74,16 @@ def init_users_db():
         )
     ''')
 
-    # 기본 계정이 없으면 생성 (MASTER / TECHNICIAN / OPERATOR 각 1개)
+    # 기본 계정이 없으면 생성
     seed_accounts = [
-        ('admin',      'admin1234',    'MASTER',     '관리자'),
-        ('tech1',      'tech1234',     'TECHNICIAN', '엔지니어1'),
-        ('operator1',  'oper1234',     'OPERATOR',   '작업자1'),
+        ('admin',    'admin1234', 'MASTER',     '관리자'),
+        ('hansung1', '1234',      'TECHNICIAN', '한성'),
+        ('hansung2', '1234',      'TECHNICIAN', '홍길동'),
+        ('hansung3', '1234',      'OPERATOR',   '김철수'),
+        ('hansung4', '1234',      'OPERATOR',   '박한수'),
+        ('hansung5', '1234',      'OPERATOR',   '최서울'),
+        ('hansung6', '1234',      'TECHNICIAN', '이영희'),
+        ('hansung7', '1234',      'OPERATOR',   '김민준'),
     ]
 
     for username, password, role, nickname in seed_accounts:
