@@ -47,9 +47,6 @@ if __name__ == '__main__':
         device_status[device_id] = {"status": "IDLE"}
     conn.close()
 
-    # 🔄 연속 가동 장비 2대 초기화 (DB 장비 관리와 독립)
-    device_status["CONT_PI_01"] = {"status": "IDLE"}
-    device_status["CONT_PI_02"] = {"status": "IDLE"}
 
     print(f"✅ 총 {len(device_status)}대의 장비를 인메모리 상태에 IDLE로 초기화했습니다.")
 
