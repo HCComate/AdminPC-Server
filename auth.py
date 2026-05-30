@@ -213,9 +213,9 @@ def login():
     if not user or not check_password_hash(user['password_hash'], password):
         return jsonify({"error": "아이디 또는 비밀번호가 틀렸습니다."}), 401
 
-    # 중복 로그인 방지: 현재 소켓에 연결된 사용자 목록(online_users) 확인
+    # 중복 로그인 방지: 현재 소켓에 연결된 사용자 목록(online_users) 확인 (단, MASTER는 예외)
     is_already_online = any(info.get('username') == user['username'] for info in online_users.values())
-    if is_already_online:
+    if is_already_online and user['role'] != 'MASTER':
         return jsonify({"error": "이미 다른 기기에서 접속 중인 계정입니다."}), 409
 
     token = create_token(user['id'], user['username'], user['role'])
