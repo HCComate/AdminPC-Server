@@ -393,7 +393,7 @@ def register_events(sio):
                 "username": payload['username'],
                 "is_online": True
             })
-            print(f"🟢 [{payload['username']}] 근무 시작 (모바일 앱 접속)")
+            print(f"🟢 [{payload['username']}] 근무 시작 (앱/웹 접속)")
         except Exception as e:
             sio.emit('worker_auth_result', {"success": False, "error": str(e)}, to=sid)
 
@@ -447,6 +447,6 @@ def register_events(sio):
                 "username": user_info['username'],
                 "is_online": False
             })
-            print(f"🔴 [{user_info['username']}] 퇴근 (모바일 앱 종료)")
+            print(f"🔴 [{user_info['username']}] 퇴근 (앱/웹 접속 종료)")
         else:
             print(f"[{sid}] 클라이언트 연결 끊김")
