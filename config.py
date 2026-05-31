@@ -18,6 +18,7 @@ ROLE_PERMISSIONS = {
         "dashboard_view",
         "device_detail",
         "inspection_result",
+        "inspection_stats",
         "alert_receive",
         "alert_assign",
         "sensitivity_setting",
@@ -55,5 +56,6 @@ data_queue     = queue.Queue()
 device_status  = {}
 locked_devices = {}
 online_users   = {}
+mobile_online_users = {} # { username: { "user_id": 1, "username": "hansung1", "role": "OPERATOR", "last_seen": timestamp } }
 escalation_sessions = {}
 

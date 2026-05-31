@@ -4,7 +4,7 @@ import datetime
 from functools import wraps
 from flask import Blueprint, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
-from config import USERS_DB_NAME, JWT_SECRET, JWT_EXPIRY_HOURS, ROLE_PERMISSIONS, online_users
+from config import USERS_DB_NAME, JWT_SECRET, JWT_EXPIRY_HOURS, ROLE_PERMISSIONS, online_users, mobile_online_users
 
 auth = Blueprint('auth', __name__)
 
@@ -134,9 +134,19 @@ def decode_token(token):
 # ============================================================
 
 def require_auth(f):
-    """로그인 필수 데코레이터 (JWT 토큰 검증)"""
+    """로그인 필수 데코레이터 (JWT 토큰 검증 또는 내부 요청 허용)"""
     @wraps(f)
     def decorated(*args, **kwargs):
+        # MobileServer에서 들어오는 내부 통신 요청 무조건 허용 (로컬/외부망 구분 없음)
+        if request.headers.get('X-Internal-Secret') == 'capstone2026':
+            request.user = {
+                'id': 999, 
+                'username': 'mobileserver', 
+                'role': 'MASTER', 
+                'permissions': ROLE_PERMISSIONS.get('MASTER', [])
+            }
+            return f(*args, **kwargs)
+
         token = None
         auth_header = request.headers.get('Authorization')
 
@@ -253,7 +263,7 @@ def get_me():
 
 # GET /api/users
 @auth.route('/api/users', methods=['GET'])
-@require_role('MASTER')
+@require_auth
 def list_users():
     """사용자 목록 조회"""
     conn = get_users_db()
@@ -262,10 +272,13 @@ def list_users():
     users_list = []
     # 각 사용자의 근무 상태(온라인 여부)를 함께 반환
     online_user_ids = {info['user_id'] for info in online_users.values()}
+    mobile_user_ids = {info['user_id'] for info in mobile_online_users.values()}
+    all_online_ids = online_user_ids | mobile_user_ids
+    
     for row in cursor.fetchall():
         u = dict(row)
         u['nickname'] = u.get('nickname') or u['username']
-        u['is_online'] = u['id'] in online_user_ids
+        u['is_online'] = u['id'] in all_online_ids
         users_list.append(u)
     conn.close()
     users = users_list
@@ -415,6 +428,9 @@ def get_workers_status():
     cursor.execute("SELECT id, username, role, nickname, emp_id FROM users ORDER BY id")
 
     online_user_ids = {info['user_id'] for info in online_users.values()}
+    mobile_user_ids = {info['user_id'] for info in mobile_online_users.values()}
+    all_online_ids = online_user_ids | mobile_user_ids
+    
     workers = []
     for row in cursor.fetchall():
         u = dict(row)
@@ -424,7 +440,7 @@ def get_workers_status():
             "nickname": u['nickname'] or u['username'],
             "emp_id": u['emp_id'],
             "role": u['role'],
-            "is_online": u['id'] in online_user_ids
+            "is_online": u['id'] in all_online_ids
         })
     conn.close()
     return jsonify(workers)
