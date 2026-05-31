@@ -285,6 +285,13 @@ def register_events(sio):
 
                 # 라즈베리파이에 즉시 정지 명령
                 sio.emit('device_lock', {"device_id": device_id})
+                
+                # 웹 UI에 LOCKED 상태 방송
+                sio.emit('device_status_changed', {
+                    "device_id": device_id,
+                    "status": "LOCKED",
+                    "message": "치명적 오류로 인해 장비가 잠겼습니다."
+                })
 
                 # 에스컬레이션 알림 시스템 시작
                 start_escalation(sio, device_id, locked_devices[device_id])
@@ -396,6 +403,49 @@ def register_events(sio):
             print(f"🟢 [{payload['username']}] 근무 시작 (앱/웹 접속)")
         except Exception as e:
             sio.emit('worker_auth_result', {"success": False, "error": str(e)}, to=sid)
+
+    @sio.on('mobile_presence')
+    def on_mobile_presence(sid, data):
+        # data = [{"username": "hansung1", "user_id": 1, "role": "OPERATOR"}, ...]
+        from config import mobile_online_users
+        import time
+
+        new_active_usernames = set()
+        for user_data in data:
+            username = user_data.get('username')
+            if username:
+                new_active_usernames.add(username)
+                
+                # 만약 기존에 없던 유저라면 근무 시작 알림
+                if username not in mobile_online_users:
+                    sio.emit('worker_status_changed', {
+                        "user_id": user_data.get('user_id'),
+                        "username": username,
+                        "is_online": True
+                    })
+                    print(f"🟢 [{username}] 근무 시작 (모바일 앱 접속)")
+                
+                mobile_online_users[username] = {
+                    "user_id": user_data.get('user_id'),
+                    "username": username,
+                    "role": user_data.get('role'),
+                    "last_seen": time.time()
+                }
+
+        # 기존 모바일 접속자 중 이번 heartbeat에 없는(끊긴) 유저 처리
+        expired_users = []
+        for username, info in list(mobile_online_users.items()):
+            if username not in new_active_usernames:
+                expired_users.append(info)
+                del mobile_online_users[username]
+                
+        for info in expired_users:
+            sio.emit('worker_status_changed', {
+                "user_id": info['user_id'],
+                "username": info['username'],
+                "is_online": False
+            })
+            print(f"🔴 [{info['username']}] 퇴근 (모바일 앱 접속 종료)")
 
     # 🚨 에스컬레이션 관련 이벤트
     @sio.on('escalation_accept')
