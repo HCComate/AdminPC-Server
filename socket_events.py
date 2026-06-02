@@ -1,7 +1,8 @@
 import json
 import random
 import eventlet
-from config import device_status, data_queue, locked_devices, online_users, escalation_sessions
+from datetime import datetime
+from config import device_status, data_queue, locked_devices, online_users, escalation_sessions, mobile_online_users
 from auth import decode_token
 
 standby_versions = {}
@@ -60,15 +61,35 @@ def build_escalation_queue(device_id):
         manager_role = u_row['role'] if u_row else None
         u_conn.close()
 
-    # 2. 담당자 sid 찾기
-    manager_sid = None
+    # 2. online_users(Socket.IO) + mobile_online_users(REST heartbeat) 통합
+    #    ⚠️ username 기준으로 중복 제거 — 같은 사람이 두 경로로 접속해도 큐에 1번만 등록
+    #    모바일 앱은 /api/alerts/pending REST 폴링으로 알림을 받으므로 mobile_ 키를 우선
+    combined_users = {}  # key → { username, role }
+    seen_usernames = set()
+
+    # 2-1. 모바일 REST 접속자 우선 등록
+    for username, info in mobile_online_users.items():
+        uname = info.get('username')
+        if uname and uname not in seen_usernames:
+            combined_users[f"mobile_{username}"] = info
+            seen_usernames.add(uname)
+
+    # 2-2. Socket.IO 접속자 중 아직 등록 안 된 username만 추가
     for sid, info in online_users.items():
+        uname = info.get('username')
+        if uname and uname not in seen_usernames:
+            combined_users[sid] = info
+            seen_usernames.add(uname)
+
+    # 3. 담당자 key 찾기
+    manager_sid = None
+    for key, info in combined_users.items():
         if info.get('username') == manager_username:
-            manager_sid = sid
+            manager_sid = key
             break
 
     queue = []
-    
+
     # 0순위: 담당자 추가
     if manager_sid:
         queue.append(manager_sid)
@@ -76,14 +97,14 @@ def build_escalation_queue(device_id):
     # 다른 인원 분류 (OPERATOR 제외)
     other_technicians = []
     other_masters = []
-    for sid, info in online_users.items():
-        if sid == manager_sid:
+    for key, info in combined_users.items():
+        if key == manager_sid:
             continue
         role = info.get('role')
         if role == 'TECHNICIAN':
-            other_technicians.append(sid)
+            other_technicians.append(key)
         elif role == 'MASTER':
-            other_masters.append(sid)
+            other_masters.append(key)
 
     import random
     random.shuffle(other_technicians)
@@ -91,14 +112,23 @@ def build_escalation_queue(device_id):
 
     # 직급별 정책 적용
     if manager_role == 'MASTER':
-        # 담당자가 MASTER면 다른 MASTER에게만 에스컬레이션
         queue.extend(other_masters)
     else:
-        # 담당자가 TECHNICIAN이거나 없는 경우 (기본)
         queue.extend(other_technicians)
         queue.extend(other_masters)
 
     return queue
+
+def _retry_escalation(sio, device_id):
+    """큐 소진 후 60초가 지나도 미해결이면 에스컬레이션을 처음부터 재시작합니다."""
+    if device_id not in locked_devices:
+        return  # 이미 해결됨
+    error_data = locked_devices[device_id]
+    print(f"🔄 [{device_id}] 미해결 CRITICAL — 에스컬레이션 재시작")
+    # 기존 세션 제거 후 재시작
+    if device_id in escalation_sessions:
+        del escalation_sessions[device_id]
+    start_escalation(sio, device_id, error_data)
 
 def start_escalation(sio, device_id, error_data):
     queue = build_escalation_queue(device_id)
@@ -129,26 +159,37 @@ def notify_next_escalation(sio, device_id):
         session["timer_task"] = None
 
     if not session["queue"]:
-        # 모든 큐 소진 시 방치 (기존의 브로드캐스트 제거)
-        print(f"🚨 [{device_id}] 에스컬레이션 큐 소진! 응답자가 없어 장비가 오류 상태로 방치됩니다.")
+        # 큐 소진 → 2분 후 전체 사용자 대상 재에스컬레이션
+        print(f"🚨 [{device_id}] 에스컬레이션 큐 소진! 2분 후 전체 재알림 예정")
+        sio.emit('critical_alert', {**session["error_data"], "retry": True})
+        session["timer_task"] = eventlet.spawn_after(
+            120.0, _retry_escalation, sio, device_id
+        )
         return
 
     next_sid = session["queue"].pop(0)
     session["current_target"] = next_sid
-    
-    # 다음 사람에게만 전송
-    sio.emit('escalation_alert', session["error_data"], to=next_sid)
-    user_info = online_users.get(next_sid, {})
-    print(f"📩 [{device_id}] 에스컬레이션 알림 발송 -> {user_info.get('username', next_sid)}")
 
-    # 20초 타임아웃
-    session["timer_task"] = eventlet.spawn_after(20.0, escalation_timeout, sio, device_id, next_sid)
+    error_data = session["error_data"]
+
+    if next_sid.startswith("mobile_"):
+        # REST heartbeat 모바일 유저 → /api/alerts/pending 폴링으로 수신 (별도 처리 불필요)
+        username = next_sid.replace("mobile_", "")
+        print(f"📩 [{device_id}] 에스컬레이션 알림 (모바일 REST) -> {username}")
+    else:
+        # Socket.IO 연결 유저 → 직접 이벤트 전송
+        sio.emit('escalation_alert', error_data, to=next_sid)
+        user_info = online_users.get(next_sid, {})
+        print(f"📩 [{device_id}] 에스컬레이션 알림 (Socket.IO) -> {user_info.get('username', next_sid)}")
+
+    # 2분(120초) 타임아웃
+    session["timer_task"] = eventlet.spawn_after(120.0, escalation_timeout, sio, device_id, next_sid)
 
 def escalation_timeout(sio, device_id, sid):
     session = escalation_sessions.get(device_id)
     if session and session.get("current_target") == sid:
         user_info = online_users.get(sid, {})
-        print(f"⏰ [{device_id}] {user_info.get('username', sid)} 응답 시간(20초) 초과. 다음 사람으로 넘어갑니다.")
+        print(f"⏰ [{device_id}] {user_info.get('username', sid)} 응답 시간(2분) 초과. 다음 사람으로 넘어갑니다.")
         notify_next_escalation(sio, device_id)
 
 
@@ -279,7 +320,10 @@ def register_events(sio):
                     "device_id": device_id,
                     "error_codes": codes,
                     "timestamp": body.get('timestamp'),
-                    "batch_id": header.get('batch_id')
+                    "batch_id": header.get('batch_id'),
+                    "locked_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+                    "severity": "CRITICAL",
+                    "message": f"CRITICAL 오류 발생: {', '.join(codes)}"
                 }
                 device_status[device_id] = {"status": "LOCKED"}
 
