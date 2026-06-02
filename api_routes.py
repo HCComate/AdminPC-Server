@@ -1,6 +1,6 @@
 import json
 from flask import Blueprint, request, jsonify
-from config import device_status, locked_devices, escalation_sessions
+from config import device_status, locked_devices, escalation_sessions, online_users
 from database import get_db
 from auth import require_auth, require_permission
 from error_loader import load_error_codes
@@ -277,6 +277,19 @@ def get_daily_stats():
     log_by_device = [{"device_id": row[0], "count": row[1]} for row in cursor.fetchall()]
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    reporting_sentences.append(f"오늘 총 {daily_error_count}건의 에러가 발생했으며, 비전 검사 불량률은 {daily_vision_ng_rate}%입니다.")
+    if log_by_device:
+        top_device = log_by_device[0]
+        if top_device['count'] > 0:
+            reporting_sentences.append(f"가장 많은 에러가 발생한 장비는 {top_device['device_id']}({top_device['count']}건)입니다.")
+    if status_trend:
+        worst_hour = max(status_trend, key=lambda x: x['ERROR'])
+        if worst_hour['ERROR'] > 0:
+            reporting_sentences.append(f"{worst_hour['hour']} 시간대에 에러({worst_hour['ERROR']}건)가 가장 집중되었습니다.")
+
     return jsonify({
         "target_date": target_date,
         "status_trend_by_hour": status_trend,
@@ -284,7 +297,8 @@ def get_daily_stats():
         "daily_error_count": daily_error_count,
         "daily_vision_ng_rate": daily_vision_ng_rate,
         "severity_distribution": sev_counts,
-        "log_count_by_device": log_by_device
+        "log_count_by_device": log_by_device,
+        "reporting_sentences": reporting_sentences
     })
 
 
@@ -383,13 +397,33 @@ def get_weekly_stats():
     st_row = cursor.fetchone()
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    total_weekly_error = sum(item['error_count'] for item in error_trend)
+    worst_day = max(error_trend, key=lambda x: x['error_count']) if error_trend else None
+    
+    if worst_day and total_weekly_error > 0:
+        reporting_sentences.append(f"이번 주 총 {total_weekly_error}건의 에러가 발생했으며, {worst_day['day']}요일에 가장 많은 에러({worst_day['error_count']}건)가 보고되었습니다.")
+    else:
+        reporting_sentences.append("이번 주는 발생한 에러 없이 안정적으로 가동되었습니다.")
+
+    if top5_codes:
+        top_code = top5_codes[0]
+        reporting_sentences.append(f"주간 최다 발생 에러 코드는 {top_code['code']} ({top_code['count']}건)입니다.")
+        
+    total_anomalies = sum(item['anomaly_count'] for item in anomaly_data)
+    if total_anomalies > 0:
+        reporting_sentences.append(f"이번 주 센서 임계치 초과 이상 사례가 총 {total_anomalies}건 감지되었습니다.")
+
     return jsonify({
         "target_week": target_week,
         "error_trend_by_day": error_trend,
         "error_ranking_by_device": error_ranking,
         "sensor_anomaly_by_day": anomaly_data,
         "top5_error_codes": top5_codes,
-        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0}
+        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0},
+        "reporting_sentences": reporting_sentences
     })
 
 
@@ -492,13 +526,32 @@ def get_monthly_stats():
     error_rate_part = [{"part_location": row[0], "percentage": round(row[1] / total_defects * 100, 2)} for row in part_rows]
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    run_cnt = st_row[0] or 0
+    err_cnt = st_row[1] or 0
+    idle_cnt = st_row[2] or 0
+    total_cnt = run_cnt + err_cnt + idle_cnt
+    run_rate = round((run_cnt / total_cnt * 100), 1) if total_cnt > 0 else 0.0
+    reporting_sentences.append(f"이번 달 전체 가동 시간 중 정상 가동(RUN) 비율은 {run_rate}%입니다.")
+    
+    if error_rate_part:
+        top_part = error_rate_part[0]
+        reporting_sentences.append(f"불량이 가장 많이 발생한 검사 부위는 '{top_part['part_location']}'({top_part['percentage']}%)입니다.")
+        
+    if error_code_dist:
+        top_error = error_code_dist[0]
+        reporting_sentences.append(f"월간 최다 발생 에러는 {top_error['code']} ({top_error['count']}건, {top_error['percentage']}%)입니다.")
+
     return jsonify({
         "target_month": target_month,
-        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0},
+        "status_distribution": {"RUN": run_cnt, "ERROR": err_cnt, "IDLE": idle_cnt},
         "error_code_distribution": error_code_dist,
         "sensor_trend_by_week": sensor_trend,
         "error_accumulation_by_device": error_accum,
-        "error_rate_by_part": error_rate_part
+        "error_rate_by_part": error_rate_part,
+        "reporting_sentences": reporting_sentences
     })
 
 
@@ -611,6 +664,21 @@ def get_yearly_stats():
         })
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    worst_quarter = max(quarter_data, key=lambda x: x['error_count']) if quarter_data else None
+    if worst_quarter and worst_quarter['error_count'] > 0:
+        reporting_sentences.append(f"올해 중 {worst_quarter['quarter']}에 에러 발생 빈도({worst_quarter['error_count']}건)가 가장 높았습니다.")
+    
+    if risk_score > 0:
+        risk_level = "매우 심각한" if risk_score > 500 else "주의가 필요한" if risk_score > 200 else "비교적 양호한"
+        reporting_sentences.append(f"올해 누적 에러 리스크 점수는 {risk_score}점으로, {risk_level} 수준입니다.")
+        
+    if vision_ng_trend:
+        avg_ng_rate = sum(item['ng_rate'] for item in vision_ng_trend) / len(vision_ng_trend)
+        reporting_sentences.append(f"연간 평균 비전 검사 불량률은 {round(avg_ng_rate, 2)}%입니다.")
+
     return jsonify({
         "target_year": target_year,
         "error_trend_by_quarter": quarter_data,
@@ -618,7 +686,8 @@ def get_yearly_stats():
         "risk_score": risk_score,
         "long_term_error_trend": long_term,
         "vision_ng_trend_by_month": vision_ng_trend,
-        "sensor_stability_by_month": stability
+        "sensor_stability_by_month": stability,
+        "reporting_sentences": reporting_sentences
     })
 
 
@@ -1065,46 +1134,102 @@ def get_inspections_recent():
 @api.route('/api/alerts/pending', methods=['GET'])
 @require_auth
 def get_pending_alerts():
+    # MobileServer가 X-Internal-Secret으로 호출하는 경우, 실제 앱 사용자명을
+    # X-Target-User 헤더로 전달 → 그 사용자의 current_target 알림만 필터
+    target_user_header = request.headers.get('X-Target-User')
+    if target_user_header:
+        username = target_user_header
+    else:
+        username = request.user.get('username')
+
+    # Socket.IO sid 또는 mobile_ prefix key 중 이 사용자와 일치하는 current_target 확인
+    def is_current_target(session, username):
+        target = session.get('current_target')
+        if target is None:
+            return False
+        if target == f"mobile_{username}":
+            return True
+        # Socket.IO 세션인 경우
+        user_info = online_users.get(target, {})
+        return user_info.get('username') == username
+
     alerts = []
     for device_id, info in locked_devices.items():
+        session = escalation_sessions.get(device_id)
+        if session is not None:
+            if not is_current_target(session, username):
+                continue
         alerts.append({
             "id": device_id,
+            "alertId": device_id,
             "deviceId": device_id,
             "errorCode": info.get("error_codes", ["UNKNOWN"])[0] if isinstance(info, dict) else "UNKNOWN",
             "errorMsg": info.get("message", "장비 오류 발생") if isinstance(info, dict) else "장비 오류 발생",
-            "severity": "CRITICAL",
-            "createdAt": info.get("locked_at", "") if isinstance(info, dict) else ""
+            "severity": info.get("severity", "CRITICAL") if isinstance(info, dict) else "CRITICAL",
+            "createdAt": info.get("locked_at", "") if isinstance(info, dict) else "",
+            "timestamp": info.get("locked_at", info.get("timestamp", "")) if isinstance(info, dict) else ""
         })
     return jsonify({"success": True, "data": alerts})
 
 
 # 📱 에러 알림 수락/거절 (모바일 앱 에스컬레이션 응답)
+# MobileServer는 device_id를 직접 전달 ("RASP_PI_19" 등 슬래시 없음)
 @api.route('/api/alerts/<alert_id>/respond', methods=['POST'])
 @require_auth
 def respond_to_alert(alert_id):
-    data = request.json or {}
-    response_type = data.get('response', 'ACCEPTED')
+    # silent=True: 파싱 실패 시 400 대신 None 반환 (eventlet/Java 클라이언트 호환)
+    data = request.get_json(silent=True) or {}
+    # body 우선, 유실 시 헤더 fallback, 그래도 없으면 기본값
+    response_type = data.get('response') or request.headers.get('X-Response-Type') or 'ACCEPTED'
+    username = (data.get('username')
+               or request.headers.get('X-Response-User')
+               or request.user.get('username', 'mobile_user'))
+
+    # alert_id에서 device_id 추출 ("alert_37594_RASP_PI_10" → "RASP_PI_10")
+    if alert_id.startswith('alert_'):
+        parts = alert_id.split('_', 2)
+        device_id = parts[2] if len(parts) >= 3 else alert_id
+    else:
+        device_id = alert_id
+
+    from socket_events import notify_next_escalation
 
     if response_type == 'ACCEPTED':
-        # 수락 시 해당 장비의 잠금 해제 처리
-        if alert_id in locked_devices:
-            from socket_events import set_standby_and_start_timer
-            del locked_devices[alert_id]
-            if alert_id in escalation_sessions:
-                del escalation_sessions[alert_id]
+        session = escalation_sessions.get(device_id)
+        if session:
+            # 에스컬레이션 타이머 중지
+            if session.get("timer_task"):
+                session["timer_task"].cancel()
+                session["timer_task"] = None
+            # 담당자 기록 (장치는 여전히 LOCKED 유지 — 실제 해제는 "오류 수정 완료" 버튼)
+            session["assigned_to"] = username
+            session["current_target"] = None
+        else:
+            # 세션이 없어도(큐 소진/타임아웃) 담당자 기록을 위해 세션 생성
+            escalation_sessions[device_id] = {
+                "queue": [],
+                "current_target": None,
+                "assigned_to": username,
+                "timer_task": None,
+                "error_data": locked_devices.get(device_id, {})
+            }
 
-            if hasattr(api, '_sio'):
-                set_standby_and_start_timer(api._sio, alert_id)
-                api._sio.emit('device_status_changed', {
-                    "device_id": alert_id,
-                    "status": "STANDBY",
-                    "message": "모바일 앱에서 오류가 해제되었습니다."
-                })
-                api._sio.emit('error_resolved', {
-                    "device_id": alert_id,
-                    "resolved_by": request.user.get('username', 'mobile_user')
-                })
-            else:
-                device_status[alert_id] = {"status": "STANDBY"}
+        # 잠긴 장치 정보에도 담당자 기록 (앱 폴링/PC 재조회 대비)
+        if device_id in locked_devices and isinstance(locked_devices[device_id], dict):
+            locked_devices[device_id]["assigned_to"] = username
 
-    return jsonify({"success": True, "message": f"Alert {alert_id} {response_type}"})
+        # PC 화면에 담당자 표시 (세션 유무와 무관하게 항상 발송)
+        if hasattr(api, '_sio'):
+            api._sio.emit('escalation_assigned', {
+                "device_id": device_id,
+                "assigned_to": username,
+                "username": username
+            })
+        print(f"✅ [{device_id}] {username}님이 모바일 앱에서 수락 (장치는 여전히 LOCKED)")
+
+    elif response_type == 'REJECTED':
+        if hasattr(api, '_sio'):
+            print(f"❌ [{device_id}] {username}님이 모바일 앱에서 거절 → 다음 담당자 에스컬레이션")
+            notify_next_escalation(api._sio, device_id)
+
+    return jsonify({"success": True, "message": f"Alert {device_id} {response_type}"})
