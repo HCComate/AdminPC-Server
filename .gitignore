@@ -1,0 +1,6 @@
+
+# 런타임 산출물
+__pycache__/
+*.db-shm
+*.db-wal
+build_output.log

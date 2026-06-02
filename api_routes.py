@@ -1,6 +1,6 @@
 import json
 from flask import Blueprint, request, jsonify
-from config import device_status, locked_devices, escalation_sessions
+from config import device_status, locked_devices, escalation_sessions, online_users
 from database import get_db
 from auth import require_auth, require_permission
 from error_loader import load_error_codes
@@ -1065,46 +1065,102 @@ def get_inspections_recent():
 @api.route('/api/alerts/pending', methods=['GET'])
 @require_auth
 def get_pending_alerts():
+    # MobileServer가 X-Internal-Secret으로 호출하는 경우, 실제 앱 사용자명을
+    # X-Target-User 헤더로 전달 → 그 사용자의 current_target 알림만 필터
+    target_user_header = request.headers.get('X-Target-User')
+    if target_user_header:
+        username = target_user_header
+    else:
+        username = request.user.get('username')
+
+    # Socket.IO sid 또는 mobile_ prefix key 중 이 사용자와 일치하는 current_target 확인
+    def is_current_target(session, username):
+        target = session.get('current_target')
+        if target is None:
+            return False
+        if target == f"mobile_{username}":
+            return True
+        # Socket.IO 세션인 경우
+        user_info = online_users.get(target, {})
+        return user_info.get('username') == username
+
     alerts = []
     for device_id, info in locked_devices.items():
+        session = escalation_sessions.get(device_id)
+        if session is not None:
+            if not is_current_target(session, username):
+                continue
         alerts.append({
             "id": device_id,
+            "alertId": device_id,
             "deviceId": device_id,
             "errorCode": info.get("error_codes", ["UNKNOWN"])[0] if isinstance(info, dict) else "UNKNOWN",
             "errorMsg": info.get("message", "장비 오류 발생") if isinstance(info, dict) else "장비 오류 발생",
-            "severity": "CRITICAL",
-            "createdAt": info.get("locked_at", "") if isinstance(info, dict) else ""
+            "severity": info.get("severity", "CRITICAL") if isinstance(info, dict) else "CRITICAL",
+            "createdAt": info.get("locked_at", "") if isinstance(info, dict) else "",
+            "timestamp": info.get("locked_at", info.get("timestamp", "")) if isinstance(info, dict) else ""
         })
     return jsonify({"success": True, "data": alerts})
 
 
 # 📱 에러 알림 수락/거절 (모바일 앱 에스컬레이션 응답)
+# MobileServer는 device_id를 직접 전달 ("RASP_PI_19" 등 슬래시 없음)
 @api.route('/api/alerts/<alert_id>/respond', methods=['POST'])
 @require_auth
 def respond_to_alert(alert_id):
-    data = request.json or {}
-    response_type = data.get('response', 'ACCEPTED')
+    # silent=True: 파싱 실패 시 400 대신 None 반환 (eventlet/Java 클라이언트 호환)
+    data = request.get_json(silent=True) or {}
+    # body 우선, 유실 시 헤더 fallback, 그래도 없으면 기본값
+    response_type = data.get('response') or request.headers.get('X-Response-Type') or 'ACCEPTED'
+    username = (data.get('username')
+               or request.headers.get('X-Response-User')
+               or request.user.get('username', 'mobile_user'))
+
+    # alert_id에서 device_id 추출 ("alert_37594_RASP_PI_10" → "RASP_PI_10")
+    if alert_id.startswith('alert_'):
+        parts = alert_id.split('_', 2)
+        device_id = parts[2] if len(parts) >= 3 else alert_id
+    else:
+        device_id = alert_id
+
+    from socket_events import notify_next_escalation
 
     if response_type == 'ACCEPTED':
-        # 수락 시 해당 장비의 잠금 해제 처리
-        if alert_id in locked_devices:
-            from socket_events import set_standby_and_start_timer
-            del locked_devices[alert_id]
-            if alert_id in escalation_sessions:
-                del escalation_sessions[alert_id]
+        session = escalation_sessions.get(device_id)
+        if session:
+            # 에스컬레이션 타이머 중지
+            if session.get("timer_task"):
+                session["timer_task"].cancel()
+                session["timer_task"] = None
+            # 담당자 기록 (장치는 여전히 LOCKED 유지 — 실제 해제는 "오류 수정 완료" 버튼)
+            session["assigned_to"] = username
+            session["current_target"] = None
+        else:
+            # 세션이 없어도(큐 소진/타임아웃) 담당자 기록을 위해 세션 생성
+            escalation_sessions[device_id] = {
+                "queue": [],
+                "current_target": None,
+                "assigned_to": username,
+                "timer_task": None,
+                "error_data": locked_devices.get(device_id, {})
+            }
 
-            if hasattr(api, '_sio'):
-                set_standby_and_start_timer(api._sio, alert_id)
-                api._sio.emit('device_status_changed', {
-                    "device_id": alert_id,
-                    "status": "STANDBY",
-                    "message": "모바일 앱에서 오류가 해제되었습니다."
-                })
-                api._sio.emit('error_resolved', {
-                    "device_id": alert_id,
-                    "resolved_by": request.user.get('username', 'mobile_user')
-                })
-            else:
-                device_status[alert_id] = {"status": "STANDBY"}
+        # 잠긴 장치 정보에도 담당자 기록 (앱 폴링/PC 재조회 대비)
+        if device_id in locked_devices and isinstance(locked_devices[device_id], dict):
+            locked_devices[device_id]["assigned_to"] = username
 
-    return jsonify({"success": True, "message": f"Alert {alert_id} {response_type}"})
+        # PC 화면에 담당자 표시 (세션 유무와 무관하게 항상 발송)
+        if hasattr(api, '_sio'):
+            api._sio.emit('escalation_assigned', {
+                "device_id": device_id,
+                "assigned_to": username,
+                "username": username
+            })
+        print(f"✅ [{device_id}] {username}님이 모바일 앱에서 수락 (장치는 여전히 LOCKED)")
+
+    elif response_type == 'REJECTED':
+        if hasattr(api, '_sio'):
+            print(f"❌ [{device_id}] {username}님이 모바일 앱에서 거절 → 다음 담당자 에스컬레이션")
+            notify_next_escalation(api._sio, device_id)
+
+    return jsonify({"success": True, "message": f"Alert {device_id} {response_type}"})
