@@ -277,6 +277,19 @@ def get_daily_stats():
     log_by_device = [{"device_id": row[0], "count": row[1]} for row in cursor.fetchall()]
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    reporting_sentences.append(f"오늘 총 {daily_error_count}건의 에러가 발생했으며, 비전 검사 불량률은 {daily_vision_ng_rate}%입니다.")
+    if log_by_device:
+        top_device = log_by_device[0]
+        if top_device['count'] > 0:
+            reporting_sentences.append(f"가장 많은 에러가 발생한 장비는 {top_device['device_id']}({top_device['count']}건)입니다.")
+    if status_trend:
+        worst_hour = max(status_trend, key=lambda x: x['ERROR'])
+        if worst_hour['ERROR'] > 0:
+            reporting_sentences.append(f"{worst_hour['hour']} 시간대에 에러({worst_hour['ERROR']}건)가 가장 집중되었습니다.")
+
     return jsonify({
         "target_date": target_date,
         "status_trend_by_hour": status_trend,
@@ -284,7 +297,8 @@ def get_daily_stats():
         "daily_error_count": daily_error_count,
         "daily_vision_ng_rate": daily_vision_ng_rate,
         "severity_distribution": sev_counts,
-        "log_count_by_device": log_by_device
+        "log_count_by_device": log_by_device,
+        "reporting_sentences": reporting_sentences
     })
 
 
@@ -383,13 +397,33 @@ def get_weekly_stats():
     st_row = cursor.fetchone()
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    total_weekly_error = sum(item['error_count'] for item in error_trend)
+    worst_day = max(error_trend, key=lambda x: x['error_count']) if error_trend else None
+    
+    if worst_day and total_weekly_error > 0:
+        reporting_sentences.append(f"이번 주 총 {total_weekly_error}건의 에러가 발생했으며, {worst_day['day']}요일에 가장 많은 에러({worst_day['error_count']}건)가 보고되었습니다.")
+    else:
+        reporting_sentences.append("이번 주는 발생한 에러 없이 안정적으로 가동되었습니다.")
+
+    if top5_codes:
+        top_code = top5_codes[0]
+        reporting_sentences.append(f"주간 최다 발생 에러 코드는 {top_code['code']} ({top_code['count']}건)입니다.")
+        
+    total_anomalies = sum(item['anomaly_count'] for item in anomaly_data)
+    if total_anomalies > 0:
+        reporting_sentences.append(f"이번 주 센서 임계치 초과 이상 사례가 총 {total_anomalies}건 감지되었습니다.")
+
     return jsonify({
         "target_week": target_week,
         "error_trend_by_day": error_trend,
         "error_ranking_by_device": error_ranking,
         "sensor_anomaly_by_day": anomaly_data,
         "top5_error_codes": top5_codes,
-        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0}
+        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0},
+        "reporting_sentences": reporting_sentences
     })
 
 
@@ -492,13 +526,32 @@ def get_monthly_stats():
     error_rate_part = [{"part_location": row[0], "percentage": round(row[1] / total_defects * 100, 2)} for row in part_rows]
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    run_cnt = st_row[0] or 0
+    err_cnt = st_row[1] or 0
+    idle_cnt = st_row[2] or 0
+    total_cnt = run_cnt + err_cnt + idle_cnt
+    run_rate = round((run_cnt / total_cnt * 100), 1) if total_cnt > 0 else 0.0
+    reporting_sentences.append(f"이번 달 전체 가동 시간 중 정상 가동(RUN) 비율은 {run_rate}%입니다.")
+    
+    if error_rate_part:
+        top_part = error_rate_part[0]
+        reporting_sentences.append(f"불량이 가장 많이 발생한 검사 부위는 '{top_part['part_location']}'({top_part['percentage']}%)입니다.")
+        
+    if error_code_dist:
+        top_error = error_code_dist[0]
+        reporting_sentences.append(f"월간 최다 발생 에러는 {top_error['code']} ({top_error['count']}건, {top_error['percentage']}%)입니다.")
+
     return jsonify({
         "target_month": target_month,
-        "status_distribution": {"RUN": st_row[0] or 0, "ERROR": st_row[1] or 0, "IDLE": st_row[2] or 0},
+        "status_distribution": {"RUN": run_cnt, "ERROR": err_cnt, "IDLE": idle_cnt},
         "error_code_distribution": error_code_dist,
         "sensor_trend_by_week": sensor_trend,
         "error_accumulation_by_device": error_accum,
-        "error_rate_by_part": error_rate_part
+        "error_rate_by_part": error_rate_part,
+        "reporting_sentences": reporting_sentences
     })
 
 
@@ -611,6 +664,21 @@ def get_yearly_stats():
         })
 
     conn.close()
+    
+    # 리포팅 문장 생성
+    reporting_sentences = []
+    worst_quarter = max(quarter_data, key=lambda x: x['error_count']) if quarter_data else None
+    if worst_quarter and worst_quarter['error_count'] > 0:
+        reporting_sentences.append(f"올해 중 {worst_quarter['quarter']}에 에러 발생 빈도({worst_quarter['error_count']}건)가 가장 높았습니다.")
+    
+    if risk_score > 0:
+        risk_level = "매우 심각한" if risk_score > 500 else "주의가 필요한" if risk_score > 200 else "비교적 양호한"
+        reporting_sentences.append(f"올해 누적 에러 리스크 점수는 {risk_score}점으로, {risk_level} 수준입니다.")
+        
+    if vision_ng_trend:
+        avg_ng_rate = sum(item['ng_rate'] for item in vision_ng_trend) / len(vision_ng_trend)
+        reporting_sentences.append(f"연간 평균 비전 검사 불량률은 {round(avg_ng_rate, 2)}%입니다.")
+
     return jsonify({
         "target_year": target_year,
         "error_trend_by_quarter": quarter_data,
@@ -618,7 +686,8 @@ def get_yearly_stats():
         "risk_score": risk_score,
         "long_term_error_trend": long_term,
         "vision_ng_trend_by_month": vision_ng_trend,
-        "sensor_stability_by_month": stability
+        "sensor_stability_by_month": stability,
+        "reporting_sentences": reporting_sentences
     })
 
 
