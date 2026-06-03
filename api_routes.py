@@ -46,12 +46,49 @@ def get_error_codes():
 @api.route('/api/devices', methods=['GET'])
 @require_auth
 def get_devices():
+    # 장비별 최신 로그 1건에서 vision 정보를 추출 (한 번의 쿼리로)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT l.device_id, l.model_name, l.sequence, l.timestamp,
+               l.vision_result, l.vision_result_code, l.defect_type, l.status_info
+        FROM logs l
+        JOIN (SELECT device_id, MAX(id) AS max_id FROM logs GROUP BY device_id) m
+          ON l.device_id = m.device_id AND l.id = m.max_id
+    ''')
+    latest = {}
+    for row in cursor.fetchall():
+        r = dict(row)
+        vision_raw = json.loads(r.get('vision_result') or '{}')
+        status_info = json.loads(r.get('status_info') or '[]')
+        latest[r['device_id']] = {
+            "modelName":    r.get("model_name", ""),
+            "timestamp":    r.get("timestamp", ""),
+            "lastSequence": r.get("sequence", 0),
+            "visionResult": vision_raw.get("result", r.get("vision_result_code", "OK")),
+            "defectType":   vision_raw.get("defect_type", r.get("defect_type", "NONE")),
+            "imageUrl":     vision_raw.get("image_url"),
+            "severity":     status_info[0].get("severity") if status_info else "LOW",
+        }
+    conn.close()
+
     devices = []
     for did, info in device_status.items():
         status = info["status"]
         if did in locked_devices:
             status = "LOCKED"
-        devices.append({"device_id": did, "status": status})
+        v = latest.get(did, {})
+        devices.append({
+            "device_id":    did,
+            "status":       status,
+            "modelName":    v.get("modelName", ""),
+            "timestamp":    v.get("timestamp", ""),
+            "lastSequence": v.get("lastSequence", 0),
+            "visionResult": v.get("visionResult", "OK"),
+            "defectType":   v.get("defectType", "NONE"),
+            "imageUrl":     v.get("imageUrl"),
+            "severity":     v.get("severity", "LOW"),
+        })
     return jsonify(devices)
 
 
