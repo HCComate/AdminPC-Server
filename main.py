@@ -1,13 +1,13 @@
 import eventlet
 import threading
 import socketio
-from flask import Flask
+from flask import Flask, request
 
 from database import init_db, db_worker, get_db
 from auth import auth, init_users_db
 from api_routes import api
 from socket_events import register_events
-from config import device_status
+from config import device_status, CORS_ORIGINS
 
 # Flask 앱 생성 및 블루프린트 등록
 flask_app = Flask(__name__)
@@ -15,16 +15,18 @@ flask_app.register_blueprint(api)     # REST API (검사 데이터)
 flask_app.register_blueprint(auth)    # 인증 / 사용자 관리
 
 
-# CORS 허용 (React 프론트엔드에서 API 호출 허용)
+# CORS 허용 (허용된 출처만 API 호출 가능)
 @flask_app.after_request
 def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
+    origin = request.headers.get('Origin', '')
+    if origin in CORS_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     return response
 
-# Socket.IO 서버 생성 및 Flask 앱 통합
-sio = socketio.Server(cors_allowed_origins='*')
+# Socket.IO 서버 생성 및 Flask 앱 통합 (허용된 출처만)
+sio = socketio.Server(cors_allowed_origins=CORS_ORIGINS)
 app = socketio.WSGIApp(sio, flask_app)
 
 # Socket.IO 이벤트 핸들러 등록

@@ -743,7 +743,7 @@ def resolve_device_error(device_id):
     if device_id in escalation_sessions:
         del escalation_sessions[device_id]
 
-    # 📝 잠금 해제 이력을 DB에 영구 저장
+    # 📝 잠금 해제 이력을 DB에 영구 저장 (및 MobileApp 이벤트 로그용 데이터 삽입)
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -751,6 +751,44 @@ def resolve_device_error(device_id):
             'INSERT INTO resolve_logs (device_id, resolved_by) VALUES (?, ?)',
             (device_id, username)
         )
+        
+        # 모바일 앱의 '이벤트 로그' 화면에서 파란색 배경('recovery' 키워드 인식)으로 표시되도록
+        # 메인 logs 테이블에 해결(RESOLVED) 내역을 가짜 검사 데이터 형태로 삽입
+        import json
+        from datetime import datetime
+        cursor.execute('SELECT batch_id, model_name, sequence FROM logs WHERE device_id = ? ORDER BY id DESC LIMIT 1', (device_id,))
+        latest = cursor.fetchone()
+        batch_id = latest['batch_id'] if latest else 'UNKNOWN_BATCH'
+        model_name = latest['model_name'] if latest else 'UNKNOWN_MODEL'
+        seq = (latest['sequence'] if latest else 0) + 1
+        
+        cursor.execute('''
+            INSERT INTO logs (
+                device_id, batch_id, model_name, sequence, machine_status,
+                status_info, vision_result, vision_result_code, defect_type,
+                sensor_data, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            device_id,
+            batch_id,
+            model_name,
+            seq,
+            "STANDBY",
+            json.dumps([{
+                "code": "RESOLVED",
+                "msg": f"Recovery by {username}",
+                "severity": "LOW",
+                "direction": "NONE",
+                "part_location": "NONE",
+                "is_capture_required": False
+            }]),
+            "{}",
+            "OK",
+            "NONE",
+            "{}",
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        ))
+        
         conn.commit()
         conn.close()
     except Exception as e:
@@ -827,12 +865,20 @@ def register_device():
     conn = get_db()
     cursor = conn.cursor()
 
-    # 중복 담당자 검증 (1인 1장비)
+    # 담당자 직급 검증 (MASTER는 제외)
     if manager_username:
-        cursor.execute("SELECT device_id FROM devices WHERE manager_username = ?", (manager_username,))
-        if cursor.fetchone():
-            conn.close()
-            return jsonify({"error": f"해당 사용자({manager_username})는 이미 다른 장비의 담당자로 지정되어 있습니다."}), 400
+        import sqlite3
+        from config import USERS_DB_NAME
+        u_conn = sqlite3.connect(USERS_DB_NAME)
+        u_cur = u_conn.cursor()
+        u_cur.execute("SELECT role FROM users WHERE username = ?", (manager_username,))
+        u_row = u_cur.fetchone()
+        u_conn.close()
+        
+        if not u_row:
+            return jsonify({"error": f"존재하지 않는 사용자({manager_username})입니다."}), 400
+        if u_row[0] == 'MASTER':
+            return jsonify({"error": f"MASTER 직급({manager_username})은 장비 담당자로 지정할 수 없습니다."}), 400
 
     try:
         cursor.execute('''
@@ -865,12 +911,22 @@ def update_device_manager(device_id):
     conn = get_db()
     cursor = conn.cursor()
 
-    # 중복 담당자 검증 (1인 1장비)
+    # 담당자 직급 검증 (MASTER는 제외)
     if manager_username:
-        cursor.execute("SELECT device_id FROM devices WHERE manager_username = ? AND device_id != ?", (manager_username, device_id))
-        if cursor.fetchone():
+        import sqlite3
+        from config import USERS_DB_NAME
+        u_conn = sqlite3.connect(USERS_DB_NAME)
+        u_cur = u_conn.cursor()
+        u_cur.execute("SELECT role FROM users WHERE username = ?", (manager_username,))
+        u_row = u_cur.fetchone()
+        u_conn.close()
+        
+        if not u_row:
             conn.close()
-            return jsonify({"error": f"해당 사용자({manager_username})는 이미 다른 장비의 담당자로 지정되어 있습니다."}), 400
+            return jsonify({"error": f"존재하지 않는 사용자({manager_username})입니다."}), 400
+        if u_row[0] == 'MASTER':
+            conn.close()
+            return jsonify({"error": f"MASTER 직급({manager_username})은 장비 담당자로 지정할 수 없습니다."}), 400
 
     if idle_timeout is not None:
         cursor.execute('UPDATE devices SET manager_username = ?, idle_timeout = ? WHERE device_id = ?', (manager_username, idle_timeout, device_id))
