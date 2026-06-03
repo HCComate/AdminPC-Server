@@ -1,6 +1,11 @@
 
 # 런타임 산출물
 __pycache__/
+*.db
 *.db-shm
 *.db-wal
 build_output.log
+
+# DB 백업/복구 산출물
+inspection_logs_empty_backup.db
+recovered_check.db
