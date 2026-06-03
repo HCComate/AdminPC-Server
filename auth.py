@@ -4,7 +4,7 @@ import datetime
 from functools import wraps
 from flask import Blueprint, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
-from config import USERS_DB_NAME, JWT_SECRET, JWT_EXPIRY_HOURS, ROLE_PERMISSIONS, online_users, mobile_online_users
+from config import USERS_DB_NAME, JWT_SECRET, JWT_EXPIRY_HOURS, ROLE_PERMISSIONS, INTERNAL_SECRET, online_users, mobile_online_users
 
 auth = Blueprint('auth', __name__)
 
@@ -137,8 +137,8 @@ def require_auth(f):
     """로그인 필수 데코레이터 (JWT 토큰 검증 또는 내부 요청 허용)"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # MobileServer에서 들어오는 내부 통신 요청 무조건 허용 (로컬/외부망 구분 없음)
-        if request.headers.get('X-Internal-Secret') == 'capstone2026':
+        # MobileServer에서 들어오는 내부 통신 요청 허용 (비밀키는 .env에서 관리)
+        if request.headers.get('X-Internal-Secret') == INTERNAL_SECRET:
             request.user = {
                 'id': 999, 
                 'username': 'mobileserver', 

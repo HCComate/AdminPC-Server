@@ -827,12 +827,20 @@ def register_device():
     conn = get_db()
     cursor = conn.cursor()
 
-    # 중복 담당자 검증 (1인 1장비)
+    # 담당자 직급 검증 (MASTER는 제외)
     if manager_username:
-        cursor.execute("SELECT device_id FROM devices WHERE manager_username = ?", (manager_username,))
-        if cursor.fetchone():
-            conn.close()
-            return jsonify({"error": f"해당 사용자({manager_username})는 이미 다른 장비의 담당자로 지정되어 있습니다."}), 400
+        import sqlite3
+        from config import USERS_DB_NAME
+        u_conn = sqlite3.connect(USERS_DB_NAME)
+        u_cur = u_conn.cursor()
+        u_cur.execute("SELECT role FROM users WHERE username = ?", (manager_username,))
+        u_row = u_cur.fetchone()
+        u_conn.close()
+        
+        if not u_row:
+            return jsonify({"error": f"존재하지 않는 사용자({manager_username})입니다."}), 400
+        if u_row[0] == 'MASTER':
+            return jsonify({"error": f"MASTER 직급({manager_username})은 장비 담당자로 지정할 수 없습니다."}), 400
 
     try:
         cursor.execute('''
@@ -865,12 +873,22 @@ def update_device_manager(device_id):
     conn = get_db()
     cursor = conn.cursor()
 
-    # 중복 담당자 검증 (1인 1장비)
+    # 담당자 직급 검증 (MASTER는 제외)
     if manager_username:
-        cursor.execute("SELECT device_id FROM devices WHERE manager_username = ? AND device_id != ?", (manager_username, device_id))
-        if cursor.fetchone():
+        import sqlite3
+        from config import USERS_DB_NAME
+        u_conn = sqlite3.connect(USERS_DB_NAME)
+        u_cur = u_conn.cursor()
+        u_cur.execute("SELECT role FROM users WHERE username = ?", (manager_username,))
+        u_row = u_cur.fetchone()
+        u_conn.close()
+        
+        if not u_row:
             conn.close()
-            return jsonify({"error": f"해당 사용자({manager_username})는 이미 다른 장비의 담당자로 지정되어 있습니다."}), 400
+            return jsonify({"error": f"존재하지 않는 사용자({manager_username})입니다."}), 400
+        if u_row[0] == 'MASTER':
+            conn.close()
+            return jsonify({"error": f"MASTER 직급({manager_username})은 장비 담당자로 지정할 수 없습니다."}), 400
 
     if idle_timeout is not None:
         cursor.execute('UPDATE devices SET manager_username = ?, idle_timeout = ? WHERE device_id = ?', (manager_username, idle_timeout, device_id))
